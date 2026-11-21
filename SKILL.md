@@ -59,13 +59,13 @@ cargo install --git https://github.com/hongkong-ai-labs/hongkong-jockeyclub-skil
 Register it with any MCP client:
 
 ```bash
-npx add-mcp "$(command -v hkjc-mcp)" --name hongkong-jockeyclub -a claude-code -a codex -a cursor -y
-claude mcp add hongkong-jockeyclub -- hkjc-mcp
-codex mcp add hongkong-jockeyclub -- hkjc-mcp
+npx add-mcp "$(command -v hkjc) mcp" --name hongkong-jockeyclub -a claude-code -a codex -a cursor -y
+claude mcp add hongkong-jockeyclub -- hkjc mcp
+codex mcp add hongkong-jockeyclub -- hkjc mcp
 ```
 
 `add-mcp` detects the client configuration files in the current project; add
-`-g` for a global install. `$(command -v hkjc-mcp)` keeps the entry correct
+`-g` for a global install. `$(command -v hkjc)` keeps the entry correct
 when the binary is on `PATH`; substitute an absolute path if your client does
 not inherit the shell `PATH`.
 
@@ -132,8 +132,8 @@ source checkout or Homebrew, and updates with that same method.
 {
   "mcpServers": {
     "hongkong-jockeyclub": {
-      "command": "/absolute/path/to/hkjc-mcp",
-      "args": []
+      "command": "/absolute/path/to/hkjc",
+      "args": ["mcp"]
     }
   }
 }
