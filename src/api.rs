@@ -88,12 +88,7 @@ impl Client {
     }
 
     async fn cached_text(&self, url: &str, ttl: Duration) -> Result<String> {
-        if let Some((at, body)) = self
-            .cache
-            .lock()
-            .expect("cache poisoned")
-            .get(url)
-            .cloned()
+        if let Some((at, body)) = self.cache.lock().expect("cache poisoned").get(url).cloned()
             && at.elapsed() < ttl
         {
             return Ok(body);
@@ -163,7 +158,11 @@ impl Client {
     }
 
     /// Race meetings and their race cards.
-    pub async fn meetings(&self, date: Option<NaiveDate>, venue: Option<&str>) -> Result<MeetingsData> {
+    pub async fn meetings(
+        &self,
+        date: Option<NaiveDate>,
+        venue: Option<&str>,
+    ) -> Result<MeetingsData> {
         let date = date.map(|date| date.to_string());
         let venue = venue.map(|value| value.to_uppercase());
         self.graphql(
@@ -184,7 +183,12 @@ impl Client {
         types: Option<Vec<String>>,
     ) -> Result<OddsData> {
         let types = types.unwrap_or_else(|| {
-            vec!["WIN".to_string(), "PLA".to_string(), "QIN".to_string(), "QPL".to_string()]
+            vec![
+                "WIN".to_string(),
+                "PLA".to_string(),
+                "QIN".to_string(),
+                "QPL".to_string(),
+            ]
         });
         self.graphql(
             "sp4e_racing_pmPool",
@@ -215,6 +219,10 @@ impl Client {
             (Some(from), None) => json!({
                 "startDate": compact(from),
                 "endDate": compact(hong_kong_today()),
+            }),
+            (None, Some(to)) => json!({
+                "startDate": compact(to - chrono::Days::new(90)),
+                "endDate": compact(to),
             }),
             _ => json!({ "lastNDraw": last_n.unwrap_or(10) }),
         };
@@ -259,6 +267,483 @@ impl Client {
             ..parsed
         })
     }
+
+    /// Published race meetings between two dates, read from the fixture calendar.
+    pub async fn fixtures(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<Fixture>> {
+        let mut fixtures = Vec::new();
+        let mut cursor =
+            NaiveDate::from_ymd_opt(from.year(), from.month(), 1).expect("first of month is valid");
+        while cursor <= to {
+            let url = format!(
+                "https://racing.hkjc.com/racing/information/English/Racing/Fixture.aspx?CalYear={}&CalMonth={:02}",
+                cursor.year(),
+                cursor.month()
+            );
+            let html = self.cached_text(&url, Duration::from_secs(3600)).await?;
+            fixtures.extend(parse_fixture_month(&html, cursor.year(), cursor.month()));
+            cursor = if cursor.month() == 12 {
+                NaiveDate::from_ymd_opt(cursor.year() + 1, 1, 1)
+            } else {
+                NaiveDate::from_ymd_opt(cursor.year(), cursor.month() + 1, 1)
+            }
+            .expect("next month is valid");
+        }
+        fixtures.retain(|fixture| {
+            let date = date_only(&fixture.date);
+            date >= from.to_string() && date <= to.to_string()
+        });
+        fixtures.sort_by(|left, right| {
+            left.date
+                .cmp(&right.date)
+                .then_with(|| left.venue_code.cmp(&right.venue_code))
+        });
+        fixtures
+            .dedup_by(|left, right| left.date == right.date && left.venue_code == right.venue_code);
+        Ok(fixtures)
+    }
+
+    /// Football matches currently offered, with HAD odds.
+    pub async fn football(&self) -> Result<Vec<FootballMatch>> {
+        let data: FootballData = self
+            .graphql(
+                "matchList",
+                queries::FOOTBALL_MATCHES,
+                json!({
+                    "startIndex": null,
+                    "endIndex": null,
+                    "startDate": null,
+                    "endDate": null,
+                    "matchIds": null,
+                    "tournIds": null,
+                    "fbOddsTypes": ["HAD"],
+                    "fbOddsTypesM": ["HAD"],
+                    "inplayOnly": null,
+                    "featuredMatchesOnly": false,
+                    "frontEndIds": null,
+                    "earlySettlementOnly": false,
+                    "showAllMatch": false,
+                }),
+                Duration::from_secs(25),
+            )
+            .await?;
+        Ok(data.matches)
+    }
+
+    /// All odds pools for one football match.
+    pub async fn football_odds(
+        &self,
+        match_id: &str,
+        types: Option<Vec<String>>,
+    ) -> Result<Vec<FootballMatch>> {
+        let types = types.unwrap_or_else(|| {
+            vec![
+                "HAD".to_string(),
+                "HHA".to_string(),
+                "CRS".to_string(),
+                "TTG".to_string(),
+            ]
+        });
+        let data: FootballData = self
+            .graphql(
+                "lastOdds",
+                queries::FOOTBALL_ODDS,
+                json!({ "matchId": match_id, "fbOddsTypes": types }),
+                Duration::from_secs(20),
+            )
+            .await?;
+        Ok(data.matches)
+    }
+
+    /// One football match with its full odds board.
+    pub async fn football_match(
+        &self,
+        match_id: &str,
+        types: Option<Vec<String>>,
+    ) -> Result<FootballMatchView> {
+        let list = self.football().await?;
+        let detail = self.football_odds(match_id, types).await?;
+        let mut view = list
+            .iter()
+            .find(|item| item.id == match_id)
+            .map(FootballMatch::view)
+            .unwrap_or_else(|| FootballMatchView {
+                id: match_id.to_string(),
+                date: String::new(),
+                kick_off: String::new(),
+                status: String::new(),
+                tournament: String::new(),
+                home: String::new(),
+                away: String::new(),
+                home_score: String::new(),
+                away_score: String::new(),
+                venue: String::new(),
+                odds: Vec::new(),
+            });
+        if detail
+            .iter()
+            .any(|match_item| !match_item.fo_pools.is_empty())
+        {
+            view.odds = detail
+                .iter()
+                .flat_map(|match_item| pool_views(&match_item.fo_pools))
+                .collect();
+        }
+        if view.home.is_empty() && view.odds.is_empty() {
+            bail!("no football match found for id {match_id}");
+        }
+        Ok(view)
+    }
+
+    /// Official jockey, trainer or horse profile page.
+    pub async fn profile(&self, kind: ProfileKind, id: &str) -> Result<ProfileView> {
+        let source = match kind {
+            ProfileKind::Jockey => format!(
+                "https://racing.hkjc.com/en-us/local/information/jockeyprofile?jockeyid={id}&Season=Current"
+            ),
+            ProfileKind::Trainer => format!(
+                "https://racing.hkjc.com/en-us/local/information/trainerprofile?trainerid={id}&Season=Current"
+            ),
+            ProfileKind::Horse => {
+                format!("https://racing.hkjc.com/en-us/local/information/horse?horseid={id}")
+            }
+        };
+        let html = self.cached_text(&source, Duration::from_secs(3600)).await?;
+        let view = parse_profile(&html, kind, id, &source);
+        if view.name.is_empty() {
+            bail!("no {} profile found for id {id}", kind.as_str());
+        }
+        Ok(view)
+    }
+
+    /// Find jockeys, trainers and horses in the current meeting by name.
+    pub async fn lookup(&self, query: &str) -> Result<Vec<LookupHit>> {
+        let data = self.meetings(None, None).await?;
+        let meeting = data
+            .pick(None, None)
+            .ok_or_else(|| anyhow::anyhow!("no race meeting is currently published"))?;
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            bail!("query must not be empty");
+        }
+        let meeting_label = format!(
+            "{} {}",
+            date_only(&meeting.date),
+            venue_name(&meeting.venue_code)
+        );
+        let mut hits: Vec<LookupHit> = Vec::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for race in &meeting.races {
+            for runner in &race.runners {
+                if runner.name_en.to_lowercase().contains(&needle) || runner.name_ch.contains(query)
+                {
+                    let id = runner
+                        .horse
+                        .as_ref()
+                        .map(|horse| {
+                            if horse.id.is_empty() {
+                                horse.code.clone()
+                            } else {
+                                horse.id.clone()
+                            }
+                        })
+                        .unwrap_or_default();
+                    if seen.insert(("horse".to_string(), id.clone())) {
+                        hits.push(LookupHit {
+                            kind: "horse".to_string(),
+                            name: runner.name_en.clone(),
+                            name_zh: runner.name_ch.clone(),
+                            id,
+                            meeting: meeting_label.clone(),
+                            race_no: race.no,
+                            horse: runner.name_en.clone(),
+                        });
+                    }
+                }
+                if let Some(person) = &runner.jockey
+                    && (person.name_en.to_lowercase().contains(&needle)
+                        || person.name_ch.contains(query))
+                    && seen.insert(("jockey".to_string(), person.code.clone()))
+                {
+                    hits.push(LookupHit {
+                        kind: "jockey".to_string(),
+                        name: person.name_en.clone(),
+                        name_zh: person.name_ch.clone(),
+                        id: person.code.clone(),
+                        meeting: meeting_label.clone(),
+                        race_no: race.no,
+                        horse: runner.name_en.clone(),
+                    });
+                }
+                if let Some(person) = &runner.trainer
+                    && (person.name_en.to_lowercase().contains(&needle)
+                        || person.name_ch.contains(query))
+                    && seen.insert(("trainer".to_string(), person.code.clone()))
+                {
+                    hits.push(LookupHit {
+                        kind: "trainer".to_string(),
+                        name: person.name_en.clone(),
+                        name_zh: person.name_ch.clone(),
+                        id: person.code.clone(),
+                        meeting: meeting_label.clone(),
+                        race_no: race.no,
+                        horse: runner.name_en.clone(),
+                    });
+                }
+            }
+        }
+        hits.sort_by(|left, right| {
+            left.kind
+                .cmp(&right.kind)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(hits)
+    }
+}
+
+/// The current Hong Kong racing season runs from 1 September to 31 July.
+pub fn season_bounds(today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let (start_year, end_year) = if today.month() >= 9 {
+        (today.year(), today.year() + 1)
+    } else {
+        (today.year() - 1, today.year())
+    };
+    (
+        NaiveDate::from_ymd_opt(start_year, 9, 1).expect("season start is valid"),
+        NaiveDate::from_ymd_opt(end_year, 7, 31).expect("season end is valid"),
+    )
+}
+
+fn is_venue_code(value: &str) -> bool {
+    matches!(value, "ST" | "HV" | "CH")
+        || (value.len() == 2 && value.starts_with('S') && value.as_bytes()[1].is_ascii_digit())
+}
+
+/// Extract race dates and venues from one fixture calendar page.
+fn parse_fixture_month(html: &str, year: i32, month: u32) -> Vec<Fixture> {
+    let marker = "class=\"f_fl f_fs14\">";
+    let alt_marker = "alt=\"";
+    let mut out = Vec::new();
+    let mut position = 0;
+    while let Some(found) = html[position..].find(marker) {
+        let day_start = position + found + marker.len();
+        let day_digits: String = html[day_start..]
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        let Ok(day) = day_digits.parse::<u32>() else {
+            position = day_start;
+            continue;
+        };
+        let after_day = day_start + day_digits.len();
+        let next = html[after_day..]
+            .find(marker)
+            .map(|offset| after_day + offset)
+            .unwrap_or(html.len());
+        let chunk = &html[after_day..next];
+        let mut search = 0;
+        while let Some(alt_found) = chunk[search..].find(alt_marker) {
+            let value_start = search + alt_found + alt_marker.len();
+            let value_end = chunk[value_start..]
+                .find('"')
+                .map(|offset| value_start + offset)
+                .unwrap_or(value_start);
+            let value = &chunk[value_start..value_end];
+            if is_venue_code(value)
+                && let Some(date) = NaiveDate::from_ymd_opt(year, month, day)
+            {
+                out.push(Fixture {
+                    date: date.to_string(),
+                    venue_code: value.to_string(),
+                });
+            }
+            search = value_end.saturating_add(1);
+            if search >= chunk.len() {
+                break;
+            }
+        }
+        position = next;
+    }
+    out
+}
+
+/// Filter the season fixture list and add weekday and venue names.
+pub fn fixture_views(
+    fixtures: &[Fixture],
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    venue: Option<&str>,
+) -> Vec<FixtureView> {
+    let venue = venue.map(|value| value.to_uppercase());
+    let mut seen = std::collections::HashSet::new();
+    let mut views: Vec<FixtureView> = fixtures
+        .iter()
+        .filter(|fixture| {
+            let date = date_only(&fixture.date);
+            from.is_none_or(|from| date >= from.to_string())
+                && to.is_none_or(|to| date <= to.to_string())
+                && venue
+                    .as_deref()
+                    .is_none_or(|venue| fixture.venue_code == venue)
+        })
+        .filter(|fixture| seen.insert((fixture.date.clone(), fixture.venue_code.clone())))
+        .map(|fixture| {
+            let date = date_only(&fixture.date);
+            let day_of_week = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                .map(|parsed| parsed.format("%a").to_string())
+                .unwrap_or_default();
+            FixtureView {
+                date,
+                day_of_week,
+                venue_code: fixture.venue_code.clone(),
+                venue: venue_name(&fixture.venue_code),
+            }
+        })
+        .collect();
+    views.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.venue_code.cmp(&right.venue_code))
+    });
+    views
+}
+
+/// Human label for an HKJC football status code.
+fn football_status(status: &str) -> String {
+    match status {
+        "PREEVENT" => "Not started".to_string(),
+        "FIRSTHALF" => "1st half".to_string(),
+        "FIRSTHALFCOMPLETED" => "Half time".to_string(),
+        "SECONDHALF" => "2nd half".to_string(),
+        "FULLTIME" | "ENDED" => "Full time".to_string(),
+        "ABANDONED" => "Abandoned".to_string(),
+        "POSTPONED" => "Postponed".to_string(),
+        "" => "Unknown".to_string(),
+        other => other.to_lowercase().replace('_', " "),
+    }
+}
+
+fn pool_views(pools: &[FoPool]) -> Vec<FootballPoolView> {
+    pools
+        .iter()
+        .filter(|pool| !pool.lines.is_empty() || !pool.closed_lines.is_empty())
+        .map(|pool| FootballPoolView {
+            pool: pool.odds_type.clone(),
+            name: if pool.name_en.is_empty() {
+                pool.odds_type.clone()
+            } else {
+                pool.name_en.clone()
+            },
+            status: pool.status.clone(),
+            lines: pool
+                .lines
+                .iter()
+                .map(|line| FootballLineView {
+                    condition: text(&line.condition),
+                    odds: line
+                        .combinations
+                        .iter()
+                        .map(|combination| FootballOddView {
+                            combination: combination.label.clone(),
+                            label: if combination.selections.is_empty() {
+                                combination.label.clone()
+                            } else {
+                                combination
+                                    .selections
+                                    .iter()
+                                    .map(|selection| selection.label.clone())
+                                    .collect::<Vec<_>>()
+                                    .join("/")
+                            },
+                            odds: text(&combination.current_odds),
+                            status: combination.status.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+impl FootballMatch {
+    pub fn view(&self) -> FootballMatchView {
+        let score = self.running_result.as_ref();
+        FootballMatchView {
+            id: self.id.clone(),
+            date: date_only(&self.match_date),
+            kick_off: hhmm(&self.kick_off_time),
+            status: football_status(&self.status),
+            tournament: self
+                .tournament
+                .as_ref()
+                .map(|tournament| tournament.name_en.clone())
+                .unwrap_or_default(),
+            home: self
+                .home_team
+                .as_ref()
+                .map(|team| team.name_en.clone())
+                .unwrap_or_default(),
+            away: self
+                .away_team
+                .as_ref()
+                .map(|team| team.name_en.clone())
+                .unwrap_or_default(),
+            home_score: score
+                .map(|score| text(&score.home_score))
+                .unwrap_or_default(),
+            away_score: score
+                .map(|score| text(&score.away_score))
+                .unwrap_or_default(),
+            venue: self
+                .venue
+                .as_ref()
+                .map(|venue| {
+                    if venue.name_en.is_empty() {
+                        venue.code.clone()
+                    } else {
+                        venue.name_en.clone()
+                    }
+                })
+                .unwrap_or_default(),
+            odds: pool_views(&self.fo_pools),
+        }
+    }
+}
+
+/// Filter, sort and trim a football match list.
+pub fn football_views(
+    matches: &[FootballMatch],
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    tournament: Option<&str>,
+    limit: usize,
+) -> Vec<FootballMatchView> {
+    let tournament = tournament.map(|value| value.to_lowercase());
+    let mut views: Vec<FootballMatchView> = matches
+        .iter()
+        .filter(|item| {
+            let date = date_only(&item.match_date);
+            from.is_none_or(|from| date >= from.to_string())
+                && to.is_none_or(|to| date <= to.to_string())
+                && tournament.as_ref().is_none_or(|needle| {
+                    item.tournament.as_ref().is_some_and(|tournament| {
+                        tournament.name_en.to_lowercase().contains(needle)
+                            || tournament.name_ch.contains(needle)
+                            || tournament.code.to_lowercase().contains(needle)
+                    })
+                })
+        })
+        .map(FootballMatch::view)
+        .collect();
+    views.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.kick_off.cmp(&right.kick_off))
+    });
+    if limit > 0 {
+        views.truncate(limit);
+    }
+    views
 }
 
 /// HKJC sends `null` for absent strings, lists and numbers. Dropping those keys
@@ -277,9 +762,6 @@ fn strip_nulls(value: Value) -> Value {
 }
 
 fn decode<T: DeserializeOwned>(body: &str) -> Result<T> {
-    if std::env::var_os("HKJC_DEBUG_BODY").is_some() {
-        eprintln!("{body}");
-    }
     let value: Value = serde_json::from_str(body)?;
     let envelope: Envelope<T> = serde_path_to_error::deserialize(strip_nulls(value))
         .map_err(|error| anyhow::anyhow!("{} (at {})", error.inner(), error.path()))?;
@@ -317,7 +799,31 @@ impl MeetingsData {
         }) {
             return Some(found);
         }
-        self.race_meetings.first()
+        // A requested date or venue that is not in the live feed is a miss, not
+        // a reason to answer with a different meeting.
+        if date.is_none() && venue.is_none() {
+            self.race_meetings.first()
+        } else {
+            None
+        }
+    }
+
+    /// Meeting summaries, filtered by date/venue when requested.
+    pub fn views_for(&self, date: Option<NaiveDate>, venue: Option<&str>) -> Vec<MeetingView> {
+        let all = self.views();
+        if date.is_none() && venue.is_none() {
+            return all;
+        }
+        let date = date.map(|date| date.to_string());
+        let venue = venue.map(|value| value.to_uppercase());
+        all.into_iter()
+            .filter(|meeting| {
+                date.as_deref().is_none_or(|date| meeting.date == date)
+                    && venue
+                        .as_deref()
+                        .is_none_or(|venue| meeting.venue_code == venue)
+            })
+            .collect()
     }
 
     /// Meeting summaries, falling back to the sparse active-meeting list.
@@ -458,10 +964,20 @@ impl Runner {
                 .as_ref()
                 .map(|person| person.name_en.clone())
                 .unwrap_or_default(),
+            jockey_code: self
+                .jockey
+                .as_ref()
+                .map(|person| person.code.clone())
+                .unwrap_or_default(),
             trainer: self
                 .trainer
                 .as_ref()
                 .map(|person| person.name_en.clone())
+                .unwrap_or_default(),
+            trainer_code: self
+                .trainer
+                .as_ref()
+                .map(|person| person.code.clone())
                 .unwrap_or_default(),
             draw: text(&self.barrier_draw_number),
             weight: text(&self.handicap_weight),
@@ -544,7 +1060,11 @@ impl OddsData {
                     .unwrap_or_else(|| pool.odds_type.clone()),
                 status: pool.status.clone(),
                 sell_status: pool.sell_status.clone(),
-                last_update: pool.last_update_time.as_deref().map(hhmm).unwrap_or_default(),
+                last_update: pool
+                    .last_update_time
+                    .as_deref()
+                    .map(hhmm)
+                    .unwrap_or_default(),
                 legs: pool
                     .leg
                     .as_ref()
@@ -626,8 +1146,7 @@ pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
         .map(|number| NumberStat {
             number: number as u8,
             count: counts[number as usize],
-            last_seen_draw: last_seen[number as usize]
-                .map(|(year, no)| format!("{year}/{no:03}")),
+            last_seen_draw: last_seen[number as usize].map(|(year, no)| format!("{year}/{no:03}")),
             percentage: (counts[number as usize] as f64 / total_numbers * 1000.0).round() / 10.0,
         })
         .collect();
@@ -694,6 +1213,26 @@ fn table_rows(table: &scraper::ElementRef) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn squash(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn find_column_squashed(header: &[String], needle: &str) -> Option<usize> {
+    let needle = squash(needle);
+    header
+        .iter()
+        .position(|cell| squash(cell) == needle)
+        .or_else(|| {
+            header
+                .iter()
+                .position(|cell| squash(cell).contains(&needle))
+        })
+}
+
 fn find_column(header: &[String], needle: &str) -> Option<usize> {
     let needle = needle.to_lowercase();
     header
@@ -718,30 +1257,28 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
     for table in document.select(&table_selector) {
         // Keep only innermost tables so layout wrappers do not duplicate rows.
         if table.select(&table_selector).next().is_some() {
-            if std::env::var_os("HKJC_DEBUG_TABLES").is_some() {
-                eprintln!("skip nested table");
-            }
             continue;
         }
         let rows = table_rows(&table);
-        if std::env::var_os("HKJC_DEBUG_TABLES").is_some() {
-            eprintln!(
-                "table rows={} first={:?}",
-                rows.len(),
-                rows.first().map(|row| row.join(" | "))
-            );
-        }
-        let Some(header) = rows.first() else {
+        if rows.is_empty() {
             continue;
-        };
-        let joined = header.join(" ");
+        }
         let table_text = rows
             .iter()
             .flat_map(|row| row.iter())
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
-        if joined.contains("Horse No.") && joined.contains("Pla.") && joined.contains("Jockey") {
+        let header_index = |needles: &[&str]| {
+            rows.iter().position(|row| {
+                let text = row.join(" ").to_lowercase();
+                needles
+                    .iter()
+                    .all(|needle| text.contains(&needle.to_lowercase()))
+            })
+        };
+        if let Some(index) = header_index(&["Pla.", "Horse No.", "Jockey"]) {
+            let header = &rows[index];
             let place = find_column(header, "Pla.");
             let horse_no = find_column(header, "Horse No.");
             let horse = find_column(header, "Horse");
@@ -751,11 +1288,11 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
             let declared = find_column(header, "Declar. Horse Wt.");
             let draw = find_column(header, "Dr.");
             let lbw = find_column(header, "LBW");
-            let position = find_column(header, "Running Position")
-                .or_else(|| find_column(header, "Running"));
+            let position =
+                find_column(header, "Running Position").or_else(|| find_column(header, "Running"));
             let finish = find_column(header, "Finish Time");
             let odds = find_column(header, "Win Odds");
-            for row in rows.iter().skip(1) {
+            for row in rows.iter().skip(index + 1) {
                 let get = |column: Option<usize>| {
                     column
                         .and_then(|index| row.get(index))
@@ -784,9 +1321,9 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                     win_odds: get(odds),
                 });
             }
-        } else if joined.contains("Winning Combination") && joined.contains("Dividend") {
+        } else if let Some(index) = header_index(&["Winning Combination"]) {
             let mut current_pool = String::new();
-            for row in rows.iter().skip(1) {
+            for row in rows.iter().skip(index + 1) {
                 if row.len() < 3 {
                     continue;
                 }
@@ -807,12 +1344,13 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                     dividend,
                 });
             }
-        } else if joined.contains("Incident") && joined.contains("Horse No.") {
+        } else if let Some(index) = header_index(&["Incident", "Horse No."]) {
+            let header = &rows[index];
             let place = find_column(header, "Pla.");
             let horse_no = find_column(header, "Horse No.");
             let horse = find_column(header, "Horse");
             let incident = find_column(header, "Incident");
-            for row in rows.iter().skip(1) {
+            for row in rows.iter().skip(index + 1) {
                 let get = |column: Option<usize>| {
                     column
                         .and_then(|index| row.get(index))
@@ -846,16 +1384,21 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
 
     let header_blob = header_cells.join(" | ");
     let race_id = extract_race_id(&header_blob, race_no);
-    let class = header_cells
+    let class_full = header_cells
         .iter()
         .find(|cell| cell.starts_with("Class"))
         .cloned()
         .unwrap_or_default();
-    let distance = class
+    let distance = class_full
         .split(" - ")
         .find(|part| part.ends_with('M'))
         .map(ToString::to_string)
         .unwrap_or_default();
+    let class = class_full
+        .split(" - ")
+        .next()
+        .unwrap_or(&class_full)
+        .to_string();
     let going = value_after(&header_cells, "going");
     let course = value_after(&header_cells, "course");
     let prize = header_cells
@@ -891,7 +1434,9 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                 && !upper.contains("TURF")
                 && !upper.contains("ALL WEATHER")
                 && !upper.contains("DIRT")
-                && cell.chars().any(|character| character.is_ascii_alphabetic())
+                && cell
+                    .chars()
+                    .any(|character| character.is_ascii_alphabetic())
                 && cell.len() > 6
         })
         .max_by_key(|cell| cell.len())
@@ -945,6 +1490,253 @@ fn extract_race_id(blob: &str, race_no: i64) -> String {
     String::new()
 }
 
+// ---------------------------------------------------------------------------
+// Jockey / trainer / horse profile pages
+// ---------------------------------------------------------------------------
+
+fn profile_tables(html: &str) -> (Html, Vec<Vec<Vec<String>>>) {
+    let document = Html::parse_document(html);
+    let table_selector = Selector::parse("table").expect("valid selector");
+    let tables = document
+        .select(&table_selector)
+        .map(|table| table_rows(&table))
+        .filter(|rows| !rows.is_empty())
+        .collect();
+    (document, tables)
+}
+
+fn cell_count(table: &[Vec<String>]) -> usize {
+    table.iter().map(|row| row.len()).sum()
+}
+
+fn table_text(table: &[Vec<String>]) -> String {
+    table
+        .iter()
+        .flat_map(|row| row.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn labelled(cells: &[String], label: &str) -> String {
+    let label = label.to_lowercase();
+    for (index, cell) in cells.iter().enumerate() {
+        let trimmed = cell.trim();
+        if trimmed.to_lowercase().starts_with(&label) {
+            let rest = trimmed[label.len()..].trim_start_matches(':').trim();
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+            if let Some(next) = cells[index + 1..].iter().find(|cell| !cell.is_empty()) {
+                return next.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn parse_pairs(cells: &[String]) -> Vec<ProfileStat> {
+    let mut out: Vec<ProfileStat> = Vec::new();
+    for (index, cell) in cells.iter().enumerate() {
+        let trimmed = cell.trim();
+        let Some(rest) = trimmed.strip_prefix(':') else {
+            continue;
+        };
+        let label = cells[..index]
+            .iter()
+            .rev()
+            .find(|cell| !cell.is_empty() && cell.trim() != ":")
+            .map(|cell| cell.trim().trim_end_matches(':').trim().to_string());
+        let value = if rest.trim().is_empty() {
+            cells[index + 1..]
+                .iter()
+                .find(|cell| !cell.is_empty() && cell.trim() != ":")
+                .map(|cell| cell.trim().to_string())
+        } else {
+            Some(rest.trim().to_string())
+        };
+        if let (Some(label), Some(value)) = (label, value)
+            && !label.is_empty()
+            && !value.is_empty()
+            && !out.iter().any(|stat| stat.label == label)
+        {
+            out.push(ProfileStat { label, value });
+        }
+    }
+    out
+}
+
+fn parse_form(rows: &[Vec<String>]) -> Vec<HorseRunView> {
+    let Some(header_index) = rows.iter().position(|row| {
+        let text = squash(&row.join(" "));
+        text.contains("raceindex") && text.contains("pla.") && text.contains("date")
+    }) else {
+        return Vec::new();
+    };
+    let header = &rows[header_index];
+    let get = |row: &[String], column: Option<usize>| {
+        column
+            .and_then(|index| row.get(index))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let index_col = find_column_squashed(header, "RaceIndex");
+    let place_col = find_column_squashed(header, "Pla.");
+    let date_col = find_column_squashed(header, "Date");
+    let track_col = find_column_squashed(header, "RC/Track");
+    let distance_col = find_column_squashed(header, "Dist.");
+    let going_col = find_column_squashed(header, "G");
+    let class_col = find_column_squashed(header, "RaceClass");
+    let draw_col = find_column_squashed(header, "Dr.");
+    let rating_col = find_column_squashed(header, "Rtg.");
+    let trainer_col = find_column_squashed(header, "Trainer");
+    let jockey_col = find_column_squashed(header, "Jockey");
+    let lbw_col = find_column_squashed(header, "LBW");
+    let odds_col = find_column_squashed(header, "Win Odds");
+    let weight_col = find_column_squashed(header, "Act.Wt.");
+    let finish_col = find_column_squashed(header, "Finish Time");
+    let mut season = String::new();
+    let mut out = Vec::new();
+    for row in &rows[header_index + 1..] {
+        let filled: Vec<&String> = row.iter().filter(|cell| !cell.is_empty()).collect();
+        if filled.len() == 1 && filled[0].contains("Season") {
+            season = filled[0].clone();
+            continue;
+        }
+        let place = get(row, place_col);
+        if place.is_empty() {
+            continue;
+        }
+        out.push(HorseRunView {
+            season: season.clone(),
+            index: get(row, index_col),
+            place,
+            date: get(row, date_col),
+            track: get(row, track_col),
+            distance: get(row, distance_col),
+            going: get(row, going_col),
+            class: get(row, class_col),
+            draw: get(row, draw_col),
+            rating: get(row, rating_col),
+            trainer: get(row, trainer_col),
+            jockey: get(row, jockey_col),
+            lengths_behind: get(row, lbw_col),
+            win_odds: get(row, odds_col),
+            weight: get(row, weight_col),
+            finish_time: get(row, finish_col),
+        });
+    }
+    out
+}
+
+pub fn parse_profile(html: &str, kind: ProfileKind, id: &str, source: &str) -> ProfileView {
+    let (document, tables) = profile_tables(html);
+    let title = document
+        .select(&Selector::parse("title").expect("valid selector"))
+        .next()
+        .map(|element| normalize(&element.text().collect::<Vec<_>>().join(" ")))
+        .unwrap_or_default();
+    let all_cells: Vec<String> = tables
+        .iter()
+        .flat_map(|table| table.iter().flat_map(|row| row.iter()))
+        .cloned()
+        .collect();
+    let bio = tables
+        .iter()
+        .filter(|table| table_text(table).contains("Age"))
+        .min_by_key(|table| cell_count(table));
+    let bio_cells: Vec<String> = bio
+        .map(|table| table.iter().flat_map(|row| row.iter()).cloned().collect())
+        .unwrap_or_default();
+
+    let mut name = String::new();
+    if kind == ProfileKind::Horse {
+        name = title.split(" - ").next().unwrap_or("").trim().to_string();
+        if name.eq_ignore_ascii_case("The Hong Kong Jockey Club") {
+            name.clear();
+        }
+        if name.is_empty()
+            && let Some(cell) = all_cells.iter().find(|cell| cell.contains('('))
+        {
+            name = cell.split('(').next().unwrap_or("").trim().to_string();
+        }
+    } else if let Some(table) = bio
+        && let Some(cell) = table.first().and_then(|row| row.first())
+        && !cell.is_empty()
+        && !cell.contains(':')
+        && cell.len() < 60
+    {
+        name = cell.clone();
+    }
+    if name.is_empty() {
+        name = title.split(" - ").next().unwrap_or("").trim().to_string();
+    }
+
+    let age = labelled(&bio_cells, "Age");
+    let background = labelled(&bio_cells, "Background");
+    let season = all_cells
+        .iter()
+        .find(|cell| cell.contains("Season") && cell.contains("Up to"))
+        .cloned()
+        .unwrap_or_default();
+
+    let mut stats: Vec<ProfileStat> = Vec::new();
+    for table in &tables {
+        let text = table
+            .iter()
+            .flat_map(|row| row.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let wanted = if kind == ProfileKind::Horse {
+            text.contains("Country of Origin")
+                || (text.contains("Sire") && text.contains("Trainer"))
+        } else {
+            text.contains("No. of Wins") || text.contains("Total Runners")
+        };
+        if !wanted || cell_count(table) > 120 {
+            continue;
+        }
+        let cells: Vec<String> = table.iter().flat_map(|row| row.iter()).cloned().collect();
+        for stat in parse_pairs(&cells) {
+            if !stats.iter().any(|existing| existing.label == stat.label) {
+                stats.push(stat);
+            }
+        }
+    }
+
+    let form = if kind == ProfileKind::Horse {
+        let candidates: Vec<_> = tables
+            .iter()
+            .filter(|table| {
+                table.iter().any(|row| {
+                    let text = squash(&row.join(" "));
+                    text.contains("raceindex") && text.contains("pla.")
+                })
+            })
+            .collect();
+        candidates
+            .into_iter()
+            .max_by_key(|table| table.len())
+            .map(|table| parse_form(table))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    ProfileView {
+        kind: kind.as_str().to_string(),
+        id: id.to_string(),
+        name,
+        age,
+        background,
+        season,
+        stats,
+        form,
+        source: source.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,5 +1773,119 @@ mod tests {
         assert_eq!(parsed.placings[0].horse, "STAR BROSE (J463)");
         assert_eq!(parsed.dividends.len(), 3);
         assert_eq!(parsed.dividends[2].pool, "PLACE");
+    }
+
+    #[test]
+    fn parses_profile_stats() {
+        let cells: Vec<String> = [
+            "Nationality",
+            ": AUS",
+            "No. of Wins",
+            ": 34",
+            "Win %",
+            ":",
+            "21.66%",
+        ]
+        .iter()
+        .map(|cell| cell.to_string())
+        .collect();
+        let stats = parse_pairs(&cells);
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].label, "Nationality");
+        assert_eq!(stats[0].value, "AUS");
+        assert_eq!(stats[1].value, "34");
+        assert_eq!(stats[2].label, "Win %");
+        assert_eq!(stats[2].value, "21.66%");
+    }
+
+    #[test]
+    fn parses_profile_page() {
+        let html = r#"<html><head><title>Zac Purton - Jockey</title></head><body>
+        <table><tr><td>Zac Purton</td><td>Age: 43</td><td>Background: Test bio</td></tr></table>
+        <table>
+          <tr><td>26/27 Season Up to Race Meeting of 18/11/2026</td></tr>
+          <tr><td>No. of Wins</td><td>: 34</td><td>Total Rides</td><td>: 157</td></tr>
+        </table>
+        </body></html>"#;
+        let profile = parse_profile(html, ProfileKind::Jockey, "PZ", "test");
+        assert_eq!(profile.name, "Zac Purton");
+        assert_eq!(profile.age, "43");
+        assert_eq!(profile.background, "Test bio");
+        assert!(profile.season.contains("26/27 Season"));
+        assert_eq!(profile.stats.len(), 2);
+        assert_eq!(profile.stats[0].label, "No. of Wins");
+        assert_eq!(profile.stats[0].value, "34");
+    }
+
+    #[test]
+    fn parses_spaced_form_header() {
+        let row = |cells: &[&str]| {
+            cells
+                .iter()
+                .map(|cell| cell.to_string())
+                .collect::<Vec<_>>()
+        };
+        let rows = vec![
+            row(&[
+                "Race Index",
+                "Pla.",
+                "Date",
+                "RC /Track/ Course",
+                "Dist.",
+                "G",
+                "Race Class",
+                "Dr.",
+                "Rtg.",
+                "Trainer",
+                "Jockey",
+                "LBW",
+                "Win Odds",
+                "Act. Wt.",
+                "Running Position",
+                "Finish Time",
+            ]),
+            row(&["26/27 Season"]),
+            row(&[
+                "150",
+                "12",
+                "01/11/26",
+                "HV / Turf / \"C+3\"",
+                "1200",
+                "G",
+                "4",
+                "8",
+                "43",
+                "K H Ting",
+                "Y L Chung",
+                "13-1/4",
+                "74",
+                "116",
+                "2 2 12",
+                "1.12.30",
+            ]),
+        ];
+        let form = parse_form(&rows);
+        assert_eq!(form.len(), 1);
+        assert_eq!(form[0].place, "12");
+        assert_eq!(form[0].date, "01/11/26");
+        assert_eq!(form[0].track, "HV / Turf / \"C+3\"");
+        assert_eq!(form[0].jockey, "Y L Chung");
+        assert_eq!(form[0].season, "26/27 Season");
+    }
+
+    #[test]
+    fn parses_fixture_calendar_cells() {
+        let html = r#"<table>
+          <tr><td><span class="f_fl f_fs14">2</span><span class="f_fr">
+            <img src="hv.gif" alt="HV" /><img src="night.gif" alt="N" /></span></td></tr>
+          <tr><td><span class="f_fl f_fs14">25</span><span class="f_fr">
+            <img src="st.gif" alt="ST" /><img src="day.gif" alt="D" /></span></td></tr>
+        </table>"#;
+        let fixtures = parse_fixture_month(html, 2026, 12);
+        assert_eq!(fixtures.len(), 2);
+        assert_eq!(fixtures[0].date, "2026-12-02");
+        assert_eq!(fixtures[0].venue_code, "HV");
+        assert_eq!(fixtures[1].date, "2026-12-25");
+        assert_eq!(fixtures[1].venue_code, "ST");
     }
 }

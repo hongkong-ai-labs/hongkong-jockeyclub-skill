@@ -3,7 +3,10 @@
 use crate::model::*;
 
 fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut widths: Vec<usize> = headers.iter().map(|header| header.chars().count()).collect();
+    let mut widths: Vec<usize> = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
             if index < widths.len() {
@@ -13,7 +16,7 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     let mut out = String::new();
     out.push_str(
-        &headers
+        headers
             .iter()
             .enumerate()
             .map(|(index, header)| format!("{header:<width$}", width = widths[index]))
@@ -32,7 +35,7 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     out.push('\n');
     for row in rows {
         out.push_str(
-            &row.iter()
+            row.iter()
                 .enumerate()
                 .map(|(index, cell)| {
                     let width = widths.get(index).copied().unwrap_or(0);
@@ -76,7 +79,11 @@ fn money(value: &str) -> String {
     if trimmed.is_empty() {
         return "-".to_string();
     }
-    let Ok(amount) = trimmed.parse::<f64>() else {
+    let cleaned: String = trimmed
+        .chars()
+        .filter(|character| *character != ',' && *character != '$')
+        .collect();
+    let Ok(amount) = cleaned.trim().parse::<f64>() else {
         return trimmed.to_string();
     };
     let cents = (amount * 100.0).round() as i64;
@@ -133,7 +140,9 @@ pub fn meetings(meetings: &[MeetingView]) -> String {
             .collect();
         out.push_str(
             table(
-                &["R", "TIME", "RACE", "CLASS", "DIST", "GOING", "RUNNERS", "STATUS"],
+                &[
+                    "R", "TIME", "RACE", "CLASS", "DIST", "GOING", "RUNNERS", "STATUS",
+                ],
                 &rows,
             )
             .trim_end(),
@@ -159,19 +168,39 @@ pub fn race_card(card: &RaceCardView) -> String {
             format!(" · {}", race.class)
         }
     ));
+    let distance = if race.distance.is_empty() {
+        String::new()
+    } else {
+        format!("{}m", race.distance)
+    };
+    let declared = card
+        .runners
+        .iter()
+        .filter(|runner| runner.status.eq_ignore_ascii_case("declared"))
+        .count();
+    let standby = card.runners.len().saturating_sub(declared);
     out.push_str(&format!(
-        "{}m · {} · {} · {} runners\n\n",
-        race.distance,
+        "{} · {} · {} · {} runners{}\n\n",
+        distance,
         race.going,
         race.course,
-        card.runners.len()
+        declared,
+        if standby > 0 {
+            format!(" (+{standby} standby)")
+        } else {
+            String::new()
+        }
     ));
     let rows: Vec<Vec<String>> = card
         .runners
         .iter()
         .map(|runner| {
             vec![
-                runner.horse_no.to_string(),
+                if runner.horse_no == 0 {
+                    "-".to_string()
+                } else {
+                    runner.horse_no.to_string()
+                },
                 runner.horse.clone(),
                 runner.jockey.clone(),
                 runner.trainer.clone(),
@@ -180,12 +209,15 @@ pub fn race_card(card: &RaceCardView) -> String {
                 runner.rating.clone(),
                 runner.last_6_runs.clone(),
                 runner.win_odds.clone(),
+                runner.status.clone(),
             ]
         })
         .collect();
     out.push_str(
         table(
-            &["NO", "HORSE", "JOCKEY", "TRAINER", "DRAW", "WT", "RTG", "LAST 6", "WIN"],
+            &[
+                "NO", "HORSE", "JOCKEY", "TRAINER", "DRAW", "WT", "RTG", "LAST 6", "WIN", "STATUS",
+            ],
             &rows,
         )
         .trim_end(),
@@ -266,7 +298,9 @@ pub fn marksix(draws: &[MarkSixDrawView]) -> String {
         })
         .collect();
     table(
-        &["DRAW", "DATE", "NUMBERS", "+", "JACKPOT", "TURNOVER", "SNOWBALL"],
+        &[
+            "DRAW", "DATE", "NUMBERS", "+", "JACKPOT", "TURNOVER", "SNOWBALL",
+        ],
         &rows,
     )
     .trim_end()
@@ -333,10 +367,7 @@ pub fn marksix_stats(stats: &MarkSixStatsView) -> String {
                 format!("{:02}", stat.number),
                 stat.count.to_string(),
                 format!("{:.1}%", stat.percentage),
-                stat.last_seen_draw
-                    .as_deref()
-                    .unwrap_or("-")
-                    .to_string(),
+                stat.last_seen_draw.as_deref().unwrap_or("-").to_string(),
             ]
         })
         .collect();
@@ -378,7 +409,12 @@ pub fn race_result(result: &RaceResultView) -> String {
     out.push_str(&format!("{}\n", result.race_name));
     out.push_str(&format!(
         "{} · {} · {} · {} · {} · {}\n\n",
-        result.class, result.distance, result.going, result.course, result.prize, result.finish_time
+        result.class,
+        result.distance,
+        result.going,
+        result.course,
+        result.prize,
+        result.finish_time
     ));
     let rows: Vec<Vec<String>> = result
         .placings
@@ -400,7 +436,9 @@ pub fn race_result(result: &RaceResultView) -> String {
         .collect();
     out.push_str(
         table(
-            &["PL", "NO", "HORSE", "JOCKEY", "TRAINER", "WT", "DR", "LBW", "TIME", "WIN"],
+            &[
+                "PL", "NO", "HORSE", "JOCKEY", "TRAINER", "WT", "DR", "LBW", "TIME", "WIN",
+            ],
             &rows,
         )
         .trim_end(),
@@ -418,16 +456,237 @@ pub fn race_result(result: &RaceResultView) -> String {
                 ]
             })
             .collect();
-        out.push_str(&table(&["POOL", "COMBINATION", "DIVIDEND"], &rows).trim_end());
+        out.push_str(table(&["POOL", "COMBINATION", "DIVIDEND"], &rows).trim_end());
     }
     if !result.incidents.is_empty() {
         out.push_str("\n\nIncidents\n");
         for incident in &result.incidents {
-            out.push_str(&format!(
-                "  {}. {}\n",
-                incident.horse_no, incident.incident
-            ));
+            out.push_str(&format!("  {}. {}\n", incident.horse_no, incident.incident));
         }
     }
     out.trim_end().to_string()
+}
+
+pub fn fixtures(fixtures: &[FixtureView]) -> String {
+    if fixtures.is_empty() {
+        return "No race meeting matches that range.".to_string();
+    }
+    let rows: Vec<Vec<String>> = fixtures
+        .iter()
+        .map(|fixture| {
+            vec![
+                fixture.date.clone(),
+                fixture.day_of_week.clone(),
+                fixture.venue.clone(),
+                fixture.venue_code.clone(),
+            ]
+        })
+        .collect();
+    table(&["DATE", "DAY", "VENUE", "CODE"], &rows)
+        .trim_end()
+        .to_string()
+}
+
+fn had_odds(item: &FootballMatchView) -> (String, String, String) {
+    let pool = item.odds.iter().find(|pool| pool.pool == "HAD");
+    let combos = pool.and_then(|pool| pool.lines.first());
+    let find = |label: &str| {
+        combos
+            .and_then(|line| line.odds.iter().find(|odd| odd.combination == label))
+            .map(|odd| odd.odds.clone())
+            .unwrap_or_default()
+    };
+    (find("H"), find("D"), find("A"))
+}
+
+pub fn football(matches: &[FootballMatchView]) -> String {
+    if matches.is_empty() {
+        return "No football match matches that filter.".to_string();
+    }
+    let rows: Vec<Vec<String>> = matches
+        .iter()
+        .map(|item| {
+            let (home, draw, away) = had_odds(item);
+            let score = if item.home_score.is_empty() && item.away_score.is_empty() {
+                String::new()
+            } else {
+                format!("{}-{}", item.home_score, item.away_score)
+            };
+            vec![
+                item.date.clone(),
+                item.kick_off.clone(),
+                format!("{} vs {}", item.home, item.away),
+                score,
+                item.tournament.clone(),
+                item.status.clone(),
+                home,
+                draw,
+                away,
+            ]
+        })
+        .collect();
+    table(
+        &[
+            "DATE",
+            "TIME",
+            "MATCH",
+            "SCORE",
+            "TOURNAMENT",
+            "STATUS",
+            "H",
+            "D",
+            "A",
+        ],
+        &rows,
+    )
+    .trim_end()
+    .to_string()
+}
+
+pub fn football_match(item: &FootballMatchView) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("{} vs {}\n", item.home, item.away));
+    let score = if item.home_score.is_empty() && item.away_score.is_empty() {
+        String::new()
+    } else {
+        format!("  {}-{}", item.home_score, item.away_score)
+    };
+    out.push_str(&format!(
+        "{} {}  ·  {}{}  ·  {}\n\n",
+        item.date, item.kick_off, item.tournament, score, item.status
+    ));
+    if item.odds.is_empty() {
+        out.push_str("No odds are published for this match.\n");
+        return out.trim_end().to_string();
+    }
+    for pool in &item.odds {
+        out.push_str(&format!(
+            "{} ({}) · {}\n",
+            pool.name, pool.pool, pool.status
+        ));
+        for line in &pool.lines {
+            if !line.condition.is_empty() {
+                out.push_str(&format!("  line {}\n", line.condition));
+            }
+            let rows: Vec<Vec<String>> = line
+                .odds
+                .iter()
+                .map(|odd| {
+                    vec![
+                        odd.combination.clone(),
+                        odd.label.clone(),
+                        odd.odds.clone(),
+                        odd.status.clone(),
+                    ]
+                })
+                .collect();
+            out.push_str(&table(
+                &["COMBINATION", "SELECTION", "ODDS", "STATUS"],
+                &rows,
+            ));
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+fn wrap(value: &str, width: usize) -> String {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in value.split_whitespace() {
+        if !current.is_empty() && current.chars().count() + 1 + word.chars().count() > width {
+            lines.push(current.clone());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines.join("\n")
+}
+
+pub fn profile(view: &ProfileView) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("{} ({})\n", view.name, view.kind));
+    if !view.age.is_empty() {
+        out.push_str(&format!("Age: {}\n", view.age));
+    }
+    if !view.season.is_empty() {
+        out.push_str(&format!("{}\n", view.season));
+    }
+    if !view.background.is_empty() {
+        out.push('\n');
+        out.push_str(&wrap(&view.background, 100));
+        out.push('\n');
+    }
+    if !view.stats.is_empty() {
+        out.push('\n');
+        let rows: Vec<Vec<String>> = view
+            .stats
+            .iter()
+            .map(|stat| vec![stat.label.clone(), stat.value.clone()])
+            .collect();
+        out.push_str(&table(&["STAT", "VALUE"], &rows));
+    }
+    if !view.form.is_empty() {
+        out.push_str("\nRecent form\n");
+        let rows: Vec<Vec<String>> = view
+            .form
+            .iter()
+            .map(|run| {
+                vec![
+                    run.date.clone(),
+                    run.place.clone(),
+                    run.track.clone(),
+                    run.distance.clone(),
+                    run.going.clone(),
+                    run.class.clone(),
+                    run.draw.clone(),
+                    run.rating.clone(),
+                    run.jockey.clone(),
+                    run.lengths_behind.clone(),
+                    run.win_odds.clone(),
+                    run.season.clone(),
+                ]
+            })
+            .collect();
+        out.push_str(
+            table(
+                &[
+                    "DATE", "PL", "TRACK", "DIST", "G", "CLASS", "DR", "RTG", "JOCKEY", "LBW",
+                    "WIN", "SEASON",
+                ],
+                &rows,
+            )
+            .trim_end(),
+        );
+    }
+    out.push_str(&format!("\nsource: {}", view.source));
+    out.trim_end().to_string()
+}
+
+pub fn lookup(hits: &[LookupHit]) -> String {
+    if hits.is_empty() {
+        return "No jockey, trainer or horse in the current meeting matches that name.".to_string();
+    }
+    let rows: Vec<Vec<String>> = hits
+        .iter()
+        .map(|hit| {
+            vec![
+                hit.kind.clone(),
+                hit.name.clone(),
+                hit.name_zh.clone(),
+                hit.id.clone(),
+                format!("R{}", hit.race_no),
+                hit.horse.clone(),
+            ]
+        })
+        .collect();
+    table(&["KIND", "NAME", "中文名", "ID", "RACE", "HORSE"], &rows)
+        .trim_end()
+        .to_string()
 }

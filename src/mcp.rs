@@ -44,7 +44,13 @@ async fn dispatch(client: &Client, request: &Value) -> Option<Value> {
     let id = request.get("id").cloned();
     let method = match request.get("method").and_then(Value::as_str) {
         Some(method) => method,
-        None => return Some(error_response(id, -32600, "invalid request: missing method")),
+        None => {
+            return Some(error_response(
+                id,
+                -32600,
+                "invalid request: missing method",
+            ));
+        }
     };
     if method.starts_with("notifications/") {
         return None;
@@ -159,6 +165,71 @@ fn tools() -> Value {
                     "draws": {"type": "integer", "minimum": 1, "description": "Recent draws to analyse. Default 100."}
                 }
             }
+        },
+        {
+            "name": "hk_race_fixtures",
+            "description": "Season fixture list of Hong Kong race meetings with dates and venues. Use for future meetings beyond the current live race card.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "First date, YYYY-MM-DD. Default today, or the season start with all=true."},
+                    "to": {"type": "string", "description": "Last date, YYYY-MM-DD. Default 90 days after from."},
+                    "venue": {"type": "string", "description": "Venue code: ST, HV, CH or S1-S9."},
+                    "all": {"type": "boolean", "description": "Return the whole published season."}
+                }
+            }
+        },
+        {
+            "name": "hk_football_matches",
+            "description": "HKJC football matches with status, score and HAD odds. Filter by date range or tournament.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "First match date, YYYY-MM-DD."},
+                    "to": {"type": "string", "description": "Last match date, YYYY-MM-DD."},
+                    "tournament": {"type": "string", "description": "Tournament name or code substring."},
+                    "limit": {"type": "integer", "minimum": 0, "description": "Maximum matches. Default 50; 0 means all."}
+                }
+            }
+        },
+        {
+            "name": "hk_football_match",
+            "description": "Full odds board for one HKJC football match: HAD, handicap, correct score, total goals and other pools.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Match id from hk_football_matches."},
+                    "types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Pools to return. Default HAD, HHA, CRS, TTG."
+                    }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "hk_race_profile",
+            "description": "Official HKJC profile for a jockey, trainer or horse: age, background, season statistics and recent form.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["jockey", "trainer", "horse"], "description": "Profile kind."},
+                    "id": {"type": "string", "description": "Jockey code, trainer code or horse id from hk_race_lookup."}
+                },
+                "required": ["kind", "id"]
+            }
+        },
+        {
+            "name": "hk_race_lookup",
+            "description": "Find a jockey, trainer or horse in the current meeting by English or Chinese name, returning the id for hk_race_profile.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Name or part of a name."}
+                },
+                "required": ["query"]
+            }
         }
     ]})
 }
@@ -168,9 +239,7 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn arg_date(args: &Value, key: &str) -> Result<Option<chrono::NaiveDate>> {
-    arg_str(args, key)
-        .map(api::parse_date)
-        .transpose()
+    arg_str(args, key).map(api::parse_date).transpose()
 }
 
 fn arg_venue(args: &Value) -> Option<String> {
@@ -192,7 +261,9 @@ async fn call(client: &Client, id: Option<Value>, params: Option<&Value>) -> Val
                 let date = arg_date(&args, "date")?;
                 let venue = arg_venue(&args);
                 let data = client.meetings(date, venue.as_deref()).await?;
-                Ok(serde_json::to_value(data.views())?)
+                Ok(serde_json::to_value(
+                    data.views_for(date, venue.as_deref()),
+                )?)
             }
             "hk_race_card" => {
                 let race = args.get("race").and_then(Value::as_i64).unwrap_or(1);
@@ -276,9 +347,82 @@ async fn call(client: &Client, id: Option<Value>, params: Option<&Value>) -> Val
                 Ok(serde_json::to_value(draw.view())?)
             }
             "hk_marksix_stats" => {
-                let draws = args.get("draws").and_then(Value::as_i64).unwrap_or(100).max(1);
+                let draws = args
+                    .get("draws")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(100)
+                    .max(1);
                 let history = client.mark_six(Some(draws), None, None).await?;
                 Ok(serde_json::to_value(api::mark_six_stats(&history))?)
+            }
+            "hk_race_fixtures" => {
+                let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+                let today = api::hong_kong_today();
+                let (season_start, season_end) = api::season_bounds(today);
+                let from = arg_date(&args, "from")?;
+                let to = arg_date(&args, "to")?;
+                let from = if all {
+                    from.unwrap_or(season_start)
+                } else {
+                    from.unwrap_or(today)
+                };
+                let to = to.unwrap_or_else(|| {
+                    if all {
+                        season_end
+                    } else {
+                        from.checked_add_days(chrono::Days::new(90))
+                            .unwrap_or(season_end)
+                    }
+                });
+                let fixtures = client.fixtures(from, to).await?;
+                let views = api::fixture_views(
+                    &fixtures,
+                    Some(from),
+                    Some(to),
+                    arg_venue(&args).as_deref(),
+                );
+                Ok(serde_json::to_value(views)?)
+            }
+            "hk_football_matches" => {
+                let matches = client.football().await?;
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize)
+                    .unwrap_or(50);
+                let views = api::football_views(
+                    &matches,
+                    arg_date(&args, "from")?,
+                    arg_date(&args, "to")?,
+                    arg_str(&args, "tournament"),
+                    limit,
+                );
+                Ok(serde_json::to_value(views)?)
+            }
+            "hk_football_match" => {
+                let id = arg_str(&args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
+                let types = args.get("types").and_then(Value::as_array).map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|value| value.to_uppercase())
+                        .collect::<Vec<_>>()
+                });
+                Ok(serde_json::to_value(
+                    client.football_match(id, types).await?,
+                )?)
+            }
+            "hk_race_profile" => {
+                let kind = arg_str(&args, "kind")
+                    .and_then(crate::model::ProfileKind::parse)
+                    .ok_or_else(|| anyhow::anyhow!("kind must be jockey, trainer or horse"))?;
+                let id = arg_str(&args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
+                Ok(serde_json::to_value(client.profile(kind, id).await?)?)
+            }
+            "hk_race_lookup" => {
+                let query =
+                    arg_str(&args, "query").ok_or_else(|| anyhow::anyhow!("query is required"))?;
+                Ok(serde_json::to_value(client.lookup(query).await?)?)
             }
             other => bail!("unknown tool: {other}"),
         }
@@ -296,7 +440,16 @@ async fn call(client: &Client, id: Option<Value>, params: Option<&Value>) -> Val
                 "isError": false
             }),
         ),
-        Err(error) => error_response(id, -32603, &format!("{error:#}")),
+        Err(error) => success(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("{error:#}")
+                }],
+                "isError": true
+            }),
+        ),
     }
 }
 
