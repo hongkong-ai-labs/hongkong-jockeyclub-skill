@@ -201,7 +201,7 @@ async fn main() -> Result<()> {
     let client = Client::new()?;
 
     if let Command::Mcp = cli.command {
-        return hkjc::mcp::serve(client);
+        return hkjc::mcp::serve(client).await;
     }
 
     match cli.command {

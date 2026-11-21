@@ -10,7 +10,7 @@ use crate::api::{self, Client};
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_VERSIONS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 
-pub fn serve(client: Client) -> Result<()> {
+pub async fn serve(client: Client) -> Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
     eprintln!("hkjc MCP server listening on stdio");
@@ -20,12 +20,7 @@ pub fn serve(client: Client) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(value) => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                runtime.block_on(dispatch(&client, &value))
-            }
+            Ok(value) => dispatch(&client, &value).await,
             Err(error) => Some(error_response(
                 None,
                 -32700,
@@ -38,6 +33,17 @@ pub fn serve(client: Client) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Blocking entry point for binaries whose `main` is not async.
+///
+/// This builds the runtime at the top level, never inside an async context, so
+/// it cannot hit "Cannot start a runtime from within a runtime".
+pub fn serve_blocking(client: Client) -> Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve(client))
 }
 
 async fn dispatch(client: &Client, request: &Value) -> Option<Value> {
