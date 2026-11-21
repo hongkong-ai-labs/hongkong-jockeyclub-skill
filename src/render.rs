@@ -3,7 +3,10 @@
 use crate::model::*;
 
 fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut widths: Vec<usize> = headers.iter().map(|header| header.chars().count()).collect();
+    let mut widths: Vec<usize> = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
             if index < widths.len() {
@@ -13,7 +16,7 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     }
     let mut out = String::new();
     out.push_str(
-        &headers
+        headers
             .iter()
             .enumerate()
             .map(|(index, header)| format!("{header:<width$}", width = widths[index]))
@@ -32,7 +35,7 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     out.push('\n');
     for row in rows {
         out.push_str(
-            &row.iter()
+            row.iter()
                 .enumerate()
                 .map(|(index, cell)| {
                     let width = widths.get(index).copied().unwrap_or(0);
@@ -133,7 +136,9 @@ pub fn meetings(meetings: &[MeetingView]) -> String {
             .collect();
         out.push_str(
             table(
-                &["R", "TIME", "RACE", "CLASS", "DIST", "GOING", "RUNNERS", "STATUS"],
+                &[
+                    "R", "TIME", "RACE", "CLASS", "DIST", "GOING", "RUNNERS", "STATUS",
+                ],
                 &rows,
             )
             .trim_end(),
@@ -185,7 +190,9 @@ pub fn race_card(card: &RaceCardView) -> String {
         .collect();
     out.push_str(
         table(
-            &["NO", "HORSE", "JOCKEY", "TRAINER", "DRAW", "WT", "RTG", "LAST 6", "WIN"],
+            &[
+                "NO", "HORSE", "JOCKEY", "TRAINER", "DRAW", "WT", "RTG", "LAST 6", "WIN",
+            ],
             &rows,
         )
         .trim_end(),
@@ -266,7 +273,9 @@ pub fn marksix(draws: &[MarkSixDrawView]) -> String {
         })
         .collect();
     table(
-        &["DRAW", "DATE", "NUMBERS", "+", "JACKPOT", "TURNOVER", "SNOWBALL"],
+        &[
+            "DRAW", "DATE", "NUMBERS", "+", "JACKPOT", "TURNOVER", "SNOWBALL",
+        ],
         &rows,
     )
     .trim_end()
@@ -333,10 +342,7 @@ pub fn marksix_stats(stats: &MarkSixStatsView) -> String {
                 format!("{:02}", stat.number),
                 stat.count.to_string(),
                 format!("{:.1}%", stat.percentage),
-                stat.last_seen_draw
-                    .as_deref()
-                    .unwrap_or("-")
-                    .to_string(),
+                stat.last_seen_draw.as_deref().unwrap_or("-").to_string(),
             ]
         })
         .collect();
@@ -378,7 +384,12 @@ pub fn race_result(result: &RaceResultView) -> String {
     out.push_str(&format!("{}\n", result.race_name));
     out.push_str(&format!(
         "{} · {} · {} · {} · {} · {}\n\n",
-        result.class, result.distance, result.going, result.course, result.prize, result.finish_time
+        result.class,
+        result.distance,
+        result.going,
+        result.course,
+        result.prize,
+        result.finish_time
     ));
     let rows: Vec<Vec<String>> = result
         .placings
@@ -400,7 +411,9 @@ pub fn race_result(result: &RaceResultView) -> String {
         .collect();
     out.push_str(
         table(
-            &["PL", "NO", "HORSE", "JOCKEY", "TRAINER", "WT", "DR", "LBW", "TIME", "WIN"],
+            &[
+                "PL", "NO", "HORSE", "JOCKEY", "TRAINER", "WT", "DR", "LBW", "TIME", "WIN",
+            ],
             &rows,
         )
         .trim_end(),
@@ -418,15 +431,12 @@ pub fn race_result(result: &RaceResultView) -> String {
                 ]
             })
             .collect();
-        out.push_str(&table(&["POOL", "COMBINATION", "DIVIDEND"], &rows).trim_end());
+        out.push_str(table(&["POOL", "COMBINATION", "DIVIDEND"], &rows).trim_end());
     }
     if !result.incidents.is_empty() {
         out.push_str("\n\nIncidents\n");
         for incident in &result.incidents {
-            out.push_str(&format!(
-                "  {}. {}\n",
-                incident.horse_no, incident.incident
-            ));
+            out.push_str(&format!("  {}. {}\n", incident.horse_no, incident.incident));
         }
     }
     out.trim_end().to_string()

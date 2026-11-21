@@ -141,9 +141,12 @@ async fn main() -> Result<()> {
             let meeting = data
                 .pick(date, venue.as_deref())
                 .ok_or_else(|| anyhow::anyhow!("no race meeting is currently published"))?;
-            let found = meeting
-                .race(race)
-                .ok_or_else(|| anyhow::anyhow!("race {race} not found; the meeting has {} races", meeting.races.len()))?;
+            let found = meeting.race(race).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "race {race} not found; the meeting has {} races",
+                    meeting.races.len()
+                )
+            })?;
             let card = found.card(meeting);
             if cli.json {
                 print_json(&card)?;
@@ -163,11 +166,19 @@ async fn main() -> Result<()> {
                 .pick(date, venue.as_deref())
                 .ok_or_else(|| anyhow::anyhow!("no race meeting is currently published"))?;
             if meeting.race(race).is_none() {
-                bail!("race {race} not found; the meeting has {} races", meeting.races.len());
+                bail!(
+                    "race {race} not found; the meeting has {} races",
+                    meeting.races.len()
+                );
             }
             let meeting_date = api::parse_date(&meeting.date)?;
             let odds = client
-                .odds(meeting_date, &meeting.venue_code, race, split_types(types.as_ref()))
+                .odds(
+                    meeting_date,
+                    &meeting.venue_code,
+                    race,
+                    split_types(types.as_ref()),
+                )
                 .await?;
             let view = odds.view(meeting_date, &meeting.venue_code, race);
             if cli.json {

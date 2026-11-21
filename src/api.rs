@@ -88,12 +88,7 @@ impl Client {
     }
 
     async fn cached_text(&self, url: &str, ttl: Duration) -> Result<String> {
-        if let Some((at, body)) = self
-            .cache
-            .lock()
-            .expect("cache poisoned")
-            .get(url)
-            .cloned()
+        if let Some((at, body)) = self.cache.lock().expect("cache poisoned").get(url).cloned()
             && at.elapsed() < ttl
         {
             return Ok(body);
@@ -163,7 +158,11 @@ impl Client {
     }
 
     /// Race meetings and their race cards.
-    pub async fn meetings(&self, date: Option<NaiveDate>, venue: Option<&str>) -> Result<MeetingsData> {
+    pub async fn meetings(
+        &self,
+        date: Option<NaiveDate>,
+        venue: Option<&str>,
+    ) -> Result<MeetingsData> {
         let date = date.map(|date| date.to_string());
         let venue = venue.map(|value| value.to_uppercase());
         self.graphql(
@@ -184,7 +183,12 @@ impl Client {
         types: Option<Vec<String>>,
     ) -> Result<OddsData> {
         let types = types.unwrap_or_else(|| {
-            vec!["WIN".to_string(), "PLA".to_string(), "QIN".to_string(), "QPL".to_string()]
+            vec![
+                "WIN".to_string(),
+                "PLA".to_string(),
+                "QIN".to_string(),
+                "QPL".to_string(),
+            ]
         });
         self.graphql(
             "sp4e_racing_pmPool",
@@ -544,7 +548,11 @@ impl OddsData {
                     .unwrap_or_else(|| pool.odds_type.clone()),
                 status: pool.status.clone(),
                 sell_status: pool.sell_status.clone(),
-                last_update: pool.last_update_time.as_deref().map(hhmm).unwrap_or_default(),
+                last_update: pool
+                    .last_update_time
+                    .as_deref()
+                    .map(hhmm)
+                    .unwrap_or_default(),
                 legs: pool
                     .leg
                     .as_ref()
@@ -626,8 +634,7 @@ pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
         .map(|number| NumberStat {
             number: number as u8,
             count: counts[number as usize],
-            last_seen_draw: last_seen[number as usize]
-                .map(|(year, no)| format!("{year}/{no:03}")),
+            last_seen_draw: last_seen[number as usize].map(|(year, no)| format!("{year}/{no:03}")),
             percentage: (counts[number as usize] as f64 / total_numbers * 1000.0).round() / 10.0,
         })
         .collect();
@@ -751,8 +758,8 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
             let declared = find_column(header, "Declar. Horse Wt.");
             let draw = find_column(header, "Dr.");
             let lbw = find_column(header, "LBW");
-            let position = find_column(header, "Running Position")
-                .or_else(|| find_column(header, "Running"));
+            let position =
+                find_column(header, "Running Position").or_else(|| find_column(header, "Running"));
             let finish = find_column(header, "Finish Time");
             let odds = find_column(header, "Win Odds");
             for row in rows.iter().skip(1) {
@@ -891,7 +898,9 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                 && !upper.contains("TURF")
                 && !upper.contains("ALL WEATHER")
                 && !upper.contains("DIRT")
-                && cell.chars().any(|character| character.is_ascii_alphabetic())
+                && cell
+                    .chars()
+                    .any(|character| character.is_ascii_alphabetic())
                 && cell.len() > 6
         })
         .max_by_key(|cell| cell.len())

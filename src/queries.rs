@@ -372,4 +372,3 @@ pub const MARK_SIX_DRAWS: &str = r#####"fragment lotteryDrawsFragment on Lottery
             }
         }
     "#####;
-

@@ -44,7 +44,13 @@ async fn dispatch(client: &Client, request: &Value) -> Option<Value> {
     let id = request.get("id").cloned();
     let method = match request.get("method").and_then(Value::as_str) {
         Some(method) => method,
-        None => return Some(error_response(id, -32600, "invalid request: missing method")),
+        None => {
+            return Some(error_response(
+                id,
+                -32600,
+                "invalid request: missing method",
+            ));
+        }
     };
     if method.starts_with("notifications/") {
         return None;
@@ -168,9 +174,7 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn arg_date(args: &Value, key: &str) -> Result<Option<chrono::NaiveDate>> {
-    arg_str(args, key)
-        .map(api::parse_date)
-        .transpose()
+    arg_str(args, key).map(api::parse_date).transpose()
 }
 
 fn arg_venue(args: &Value) -> Option<String> {
@@ -276,7 +280,11 @@ async fn call(client: &Client, id: Option<Value>, params: Option<&Value>) -> Val
                 Ok(serde_json::to_value(draw.view())?)
             }
             "hk_marksix_stats" => {
-                let draws = args.get("draws").and_then(Value::as_i64).unwrap_or(100).max(1);
+                let draws = args
+                    .get("draws")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(100)
+                    .max(1);
                 let history = client.mark_six(Some(draws), None, None).await?;
                 Ok(serde_json::to_value(api::mark_six_stats(&history))?)
             }
