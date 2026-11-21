@@ -45,6 +45,30 @@ BIN="$(bash scripts/ensure-binary.sh)"
 It checks `$HKJC_BIN`, `hkjc` on `PATH`, `scripts/install.sh`, then
 `cargo build --release --locked` in the repo root.
 
+### Install the binary directly
+
+`npx skills add` installs the skill files. If the binary is missing, install it
+with the release installer or cargo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongkong-ai-labs/hongkong-jockeyclub-skill/main/scripts/install.sh | sh
+# or
+cargo install --git https://github.com/hongkong-ai-labs/hongkong-jockeyclub-skill --locked
+```
+
+Register it with any MCP client:
+
+```bash
+npx add-mcp "$(command -v hkjc-mcp)" --name hongkong-jockeyclub -a claude-code -a codex -a cursor -y
+claude mcp add hongkong-jockeyclub -- hkjc-mcp
+codex mcp add hongkong-jockeyclub -- hkjc-mcp
+```
+
+`add-mcp` detects the client configuration files in the current project; add
+`-g` for a global install. `$(command -v hkjc-mcp)` keeps the entry correct
+when the binary is on `PATH`; substitute an absolute path if your client does
+not inherit the shell `PATH`.
+
 ## CLI
 
 ```bash
