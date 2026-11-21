@@ -57,13 +57,35 @@ fn truncate(value: &str, limit: usize) -> String {
     out
 }
 
+fn group(mut value: i64) -> String {
+    let negative = value < 0;
+    value = value.abs();
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(character);
+    }
+    if negative { format!("-{out}") } else { out }
+}
+
 fn money(value: &str) -> String {
-    if value.trim().is_empty() {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
         return "-".to_string();
     }
-    match value.trim().parse::<f64>() {
-        Ok(amount) => format!("HK${amount:.0}"),
-        Err(_) => value.to_string(),
+    let Ok(amount) = trimmed.parse::<f64>() else {
+        return trimmed.to_string();
+    };
+    let cents = (amount * 100.0).round() as i64;
+    let whole = cents / 100;
+    let fraction = (cents % 100).abs();
+    if fraction == 0 {
+        format!("HK${}", group(whole))
+    } else {
+        format!("HK${}.{fraction:02}", group(whole))
     }
 }
 
@@ -296,14 +318,8 @@ pub fn marksix_stats(stats: &MarkSixStatsView) -> String {
     out.push_str(&format!(
         "Mark Six frequency — {} draws ({} to {})\n\n",
         stats.draws_analysed,
-        stats
-            .from_draw
-            .map(|draw| draw.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        stats
-            .to_draw
-            .map(|draw| draw.to_string())
-            .unwrap_or_else(|| "-".to_string())
+        stats.from_draw.as_deref().unwrap_or("-"),
+        stats.to_draw.as_deref().unwrap_or("-")
     ));
     out.push_str(&format!(
         "Odd {}  ·  Even {}  ·  Average sum {:.2}\n\n",
@@ -318,8 +334,9 @@ pub fn marksix_stats(stats: &MarkSixStatsView) -> String {
                 stat.count.to_string(),
                 format!("{:.1}%", stat.percentage),
                 stat.last_seen_draw
-                    .map(|draw| draw.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
+                    .as_deref()
+                    .unwrap_or("-")
+                    .to_string(),
             ]
         })
         .collect();

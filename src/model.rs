@@ -1,7 +1,20 @@
 //! Response models for the HKJC GraphQL API and the racing results pages.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// HKJC mixes JSON numbers and numeric strings in the same field.
+fn de_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Number(number) => number.as_i64().unwrap_or(0),
+        Value::String(text) => text.trim().parse().unwrap_or(0),
+        _ => 0,
+    })
+}
 
 /// GraphQL response envelope.
 #[derive(Debug, Deserialize)]
@@ -58,7 +71,7 @@ pub struct ActiveMeeting {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveRace {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub no: i64,
     #[serde(default)]
     pub post_time: Option<String>,
@@ -88,7 +101,7 @@ pub struct Meeting {
     #[serde(default)]
     pub meeting_type: Option<String>,
     #[serde(default)]
-    pub country: Option<Country>,
+    pub country: Vec<Country>,
     #[serde(default)]
     pub races: Vec<Race>,
 }
@@ -109,7 +122,7 @@ pub struct Country {
 pub struct Race {
     #[serde(default)]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub no: i64,
     #[serde(default)]
     pub status: String,
@@ -168,10 +181,8 @@ pub struct Course {
 pub struct Runner {
     #[serde(default)]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub no: i64,
-    #[serde(default)]
-    pub standby_no: Option<i64>,
     #[serde(default)]
     pub status: String,
     #[serde(default, rename = "name_en")]
@@ -337,7 +348,7 @@ pub struct PmPool {
 #[serde(rename_all = "camelCase")]
 pub struct Leg {
     #[serde(default)]
-    pub number: Option<i64>,
+    pub number: Option<Value>,
     #[serde(default)]
     pub races: Vec<i64>,
 }
@@ -392,7 +403,7 @@ pub struct Draw {
     pub id: String,
     #[serde(default)]
     pub year: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64")]
     pub no: i64,
     #[serde(default)]
     pub open_date: Option<String>,
@@ -438,7 +449,7 @@ pub struct LotteryPool {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prize {
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "de_i64")]
     pub kind: i64,
     #[serde(default)]
     pub winning_unit: Option<Value>,
@@ -573,15 +584,15 @@ pub struct MarkSixPrizeView {
 pub struct NumberStat {
     pub number: u8,
     pub count: u64,
-    pub last_seen_draw: Option<i64>,
+    pub last_seen_draw: Option<String>,
     pub percentage: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MarkSixStatsView {
     pub draws_analysed: usize,
-    pub from_draw: Option<i64>,
-    pub to_draw: Option<i64>,
+    pub from_draw: Option<String>,
+    pub to_draw: Option<String>,
     pub hot: Vec<NumberStat>,
     pub cold: Vec<NumberStat>,
     pub numbers: Vec<NumberStat>,

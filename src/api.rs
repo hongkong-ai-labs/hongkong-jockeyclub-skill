@@ -277,8 +277,12 @@ fn strip_nulls(value: Value) -> Value {
 }
 
 fn decode<T: DeserializeOwned>(body: &str) -> Result<T> {
+    if std::env::var_os("HKJC_DEBUG_BODY").is_some() {
+        eprintln!("{body}");
+    }
     let value: Value = serde_json::from_str(body)?;
-    let envelope: Envelope<T> = serde_json::from_value(strip_nulls(value))?;
+    let envelope: Envelope<T> = serde_path_to_error::deserialize(strip_nulls(value))
+        .map_err(|error| anyhow::anyhow!("{} (at {})", error.inner(), error.path()))?;
     unwrap_envelope(envelope)
 }
 
@@ -367,7 +371,7 @@ impl Meeting {
             meeting_type: self.meeting_type.clone().unwrap_or_default(),
             country: self
                 .country
-                .as_ref()
+                .first()
                 .map(|country| {
                     if country.nameen.is_empty() {
                         country.code.clone()
@@ -578,14 +582,18 @@ impl OddsData {
 }
 
 /// Frequency statistics across Mark Six draws.
+pub fn draw_label(draw: &Draw) -> String {
+    format!("{}/{:03}", draw.year, draw.no)
+}
+
 pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
     let mut counts = [0u64; 50];
-    let mut last_seen = [None::<i64>; 50];
+    let mut last_seen: [Option<(i64, i64)>; 50] = [None; 50];
     let mut odd = 0u64;
     let mut even = 0u64;
     let mut sum_total = 0u64;
     let mut analysed = 0usize;
-    let mut draw_numbers = Vec::new();
+    let mut draw_marks: Vec<(i64, i64)> = Vec::new();
     for draw in draws {
         let Some(result) = draw.draw_result.as_ref() else {
             continue;
@@ -593,15 +601,17 @@ pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
         if result.drawn_no.is_empty() {
             continue;
         }
+        let year = draw.year.parse::<i64>().unwrap_or(0);
+        let mark = (year, draw.no);
         analysed += 1;
-        draw_numbers.push(draw.no);
+        draw_marks.push(mark);
         sum_total += result.drawn_no.iter().map(|n| *n as u64).sum::<u64>();
         for number in &result.drawn_no {
             if (1..=49).contains(number) {
                 counts[*number as usize] += 1;
                 let seen = &mut last_seen[*number as usize];
-                if seen.is_none_or(|previous| draw.no > previous) {
-                    *seen = Some(draw.no);
+                if seen.is_none_or(|previous| mark > previous) {
+                    *seen = Some(mark);
                 }
                 if number % 2 == 0 {
                     even += 1;
@@ -616,7 +626,8 @@ pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
         .map(|number| NumberStat {
             number: number as u8,
             count: counts[number as usize],
-            last_seen_draw: last_seen[number as usize],
+            last_seen_draw: last_seen[number as usize]
+                .map(|(year, no)| format!("{year}/{no:03}")),
             percentage: (counts[number as usize] as f64 / total_numbers * 1000.0).round() / 10.0,
         })
         .collect();
@@ -638,8 +649,14 @@ pub fn mark_six_stats(draws: &[Draw]) -> MarkSixStatsView {
     numbers.sort_by_key(|stat| stat.number);
     MarkSixStatsView {
         draws_analysed: analysed,
-        from_draw: draw_numbers.iter().min().copied(),
-        to_draw: draw_numbers.iter().max().copied(),
+        from_draw: draw_marks
+            .iter()
+            .min()
+            .map(|(year, no)| format!("{year}/{no:03}")),
+        to_draw: draw_marks
+            .iter()
+            .max()
+            .map(|(year, no)| format!("{year}/{no:03}")),
         hot,
         cold,
         numbers,
@@ -699,11 +716,31 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
     let mut header_cells: Vec<String> = Vec::new();
 
     for table in document.select(&table_selector) {
+        // Keep only innermost tables so layout wrappers do not duplicate rows.
+        if table.select(&table_selector).next().is_some() {
+            if std::env::var_os("HKJC_DEBUG_TABLES").is_some() {
+                eprintln!("skip nested table");
+            }
+            continue;
+        }
         let rows = table_rows(&table);
+        if std::env::var_os("HKJC_DEBUG_TABLES").is_some() {
+            eprintln!(
+                "table rows={} first={:?}",
+                rows.len(),
+                rows.first().map(|row| row.join(" | "))
+            );
+        }
         let Some(header) = rows.first() else {
             continue;
         };
         let joined = header.join(" ");
+        let table_text = rows
+            .iter()
+            .flat_map(|row| row.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
         if joined.contains("Horse No.") && joined.contains("Pla.") && joined.contains("Jockey") {
             let place = find_column(header, "Pla.");
             let horse_no = find_column(header, "Horse No.");
@@ -714,7 +751,8 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
             let declared = find_column(header, "Declar. Horse Wt.");
             let draw = find_column(header, "Dr.");
             let lbw = find_column(header, "LBW");
-            let position = find_column(header, "RunningPosition");
+            let position = find_column(header, "Running Position")
+                .or_else(|| find_column(header, "Running"));
             let finish = find_column(header, "Finish Time");
             let odds = find_column(header, "Win Odds");
             for row in rows.iter().skip(1) {
@@ -792,7 +830,10 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                     incident: text,
                 });
             }
-        } else if joined.contains("Class") && joined.contains("Going") {
+        } else if table_text.contains("Class")
+            && table_text.contains("Going")
+            && table_text.contains("RACE ")
+        {
             for row in rows {
                 for cell in row {
                     if !cell.is_empty() {
@@ -815,16 +856,8 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
         .find(|part| part.ends_with('M'))
         .map(ToString::to_string)
         .unwrap_or_default();
-    let going = header_cells
-        .iter()
-        .find(|cell| cell.contains("Going"))
-        .cloned()
-        .unwrap_or_default();
-    let course = header_cells
-        .iter()
-        .find(|cell| cell.starts_with("Course"))
-        .cloned()
-        .unwrap_or_default();
+    let going = value_after(&header_cells, "going");
+    let course = value_after(&header_cells, "course");
     let prize = header_cells
         .iter()
         .find(|cell| cell.starts_with("HK$"))
@@ -854,6 +887,10 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
                 && !cell.starts_with("Class")
                 && !cell.contains("HK$")
                 && !upper.starts_with("RACE ")
+                && !upper.contains("COURSE")
+                && !upper.contains("TURF")
+                && !upper.contains("ALL WEATHER")
+                && !upper.contains("DIRT")
                 && cell.chars().any(|character| character.is_ascii_alphabetic())
                 && cell.len() > 6
         })
@@ -877,6 +914,22 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
         dividends,
         incidents,
     })
+}
+
+/// The first non-empty cell after the one containing `needle`.
+fn value_after(cells: &[String], needle: &str) -> String {
+    let needle = needle.to_lowercase();
+    if let Some(index) = cells
+        .iter()
+        .position(|cell| cell.to_lowercase().contains(&needle))
+    {
+        for cell in &cells[index + 1..] {
+            if !cell.is_empty() {
+                return cell.clone();
+            }
+        }
+    }
+    String::new()
 }
 
 fn extract_race_id(blob: &str, race_no: i64) -> String {
