@@ -1,0 +1,13 @@
+services:
+  stdio:
+    build: .
+    image: hkjc:local
+    stdin_open: true
+    entrypoint: ["hkjc"]
+    command: ["mcp"]
+
+  cli:
+    profiles: ["cli"]
+    build: .
+    image: hkjc:local
+    command: ["--help"]

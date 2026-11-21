@@ -507,7 +507,9 @@ pub struct RunnerView {
     pub horse_zh: String,
     pub horse_id: String,
     pub jockey: String,
+    pub jockey_code: String,
     pub trainer: String,
+    pub trainer_code: String,
     pub draw: String,
     pub weight: String,
     pub rating: String,
@@ -654,4 +656,302 @@ pub struct IncidentView {
     pub horse_no: String,
     pub horse: String,
     pub incident: String,
+}
+
+// ---------------------------------------------------------------------------
+// Season fixtures
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fixture {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub venue_code: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FixtureView {
+    pub date: String,
+    pub day_of_week: String,
+    pub venue_code: String,
+    pub venue: String,
+}
+
+// ---------------------------------------------------------------------------
+// Football
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FootballData {
+    #[serde(default)]
+    pub matches: Vec<FootballMatch>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FootballMatch {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub front_end_id: Option<String>,
+    #[serde(default)]
+    pub match_date: String,
+    #[serde(default)]
+    pub kick_off_time: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub sequence: Option<Value>,
+    #[serde(default)]
+    pub home_team: Option<Team>,
+    #[serde(default)]
+    pub away_team: Option<Team>,
+    #[serde(default)]
+    pub tournament: Option<Tournament>,
+    #[serde(default)]
+    pub venue: Option<Venue>,
+    #[serde(default)]
+    pub tv_channels: Vec<Venue>,
+    #[serde(default)]
+    pub running_result: Option<Score>,
+    #[serde(default)]
+    pub running_result_extra: Option<Score>,
+    #[serde(default)]
+    pub fo_pools: Vec<FoPool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Team {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tournament {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Venue {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Score {
+    #[serde(default)]
+    pub home_score: Option<Value>,
+    #[serde(default)]
+    pub away_score: Option<Value>,
+    #[serde(default)]
+    pub corner: Option<Value>,
+    #[serde(default)]
+    pub home_corner: Option<Value>,
+    #[serde(default)]
+    pub away_corner: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoPool {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub odds_type: String,
+    #[serde(default)]
+    pub inst_no: Option<Value>,
+    #[serde(default)]
+    pub inplay: Option<Value>,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+    #[serde(default)]
+    pub lines: Vec<FoLine>,
+    #[serde(default)]
+    pub closed_lines: Vec<FoLine>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoLine {
+    #[serde(default)]
+    pub line_id: Option<Value>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub condition: Option<Value>,
+    #[serde(default)]
+    pub main: Option<Value>,
+    #[serde(default)]
+    pub combinations: Vec<FoCombination>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoCombination {
+    #[serde(default)]
+    pub comb_id: Option<Value>,
+    #[serde(default, rename = "str")]
+    pub label: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub current_odds: Option<Value>,
+    #[serde(default)]
+    pub selections: Vec<FoSelection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoSelection {
+    #[serde(default)]
+    pub sel_id: Option<Value>,
+    #[serde(default, rename = "str")]
+    pub label: String,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FootballMatchView {
+    pub id: String,
+    pub date: String,
+    pub kick_off: String,
+    pub status: String,
+    pub tournament: String,
+    pub home: String,
+    pub away: String,
+    pub home_score: String,
+    pub away_score: String,
+    pub venue: String,
+    pub odds: Vec<FootballPoolView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FootballPoolView {
+    pub pool: String,
+    pub name: String,
+    pub status: String,
+    pub lines: Vec<FootballLineView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FootballLineView {
+    pub condition: String,
+    pub odds: Vec<FootballOddView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FootballOddView {
+    pub combination: String,
+    pub label: String,
+    pub odds: String,
+    pub status: String,
+}
+
+// ---------------------------------------------------------------------------
+// Jockey / trainer / horse profiles
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileKind {
+    Jockey,
+    Trainer,
+    Horse,
+}
+
+impl ProfileKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "jockey" | "jockeys" => Some(Self::Jockey),
+            "trainer" | "trainers" => Some(Self::Trainer),
+            "horse" | "horses" => Some(Self::Horse),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jockey => "jockey",
+            Self::Trainer => "trainer",
+            Self::Horse => "horse",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileStat {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HorseRunView {
+    pub season: String,
+    pub index: String,
+    pub place: String,
+    pub date: String,
+    pub track: String,
+    pub distance: String,
+    pub going: String,
+    pub class: String,
+    pub draw: String,
+    pub rating: String,
+    pub trainer: String,
+    pub jockey: String,
+    pub lengths_behind: String,
+    pub win_odds: String,
+    pub weight: String,
+    pub finish_time: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileView {
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+    pub age: String,
+    pub background: String,
+    pub season: String,
+    pub stats: Vec<ProfileStat>,
+    pub form: Vec<HorseRunView>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LookupHit {
+    pub kind: String,
+    pub name: String,
+    pub name_zh: String,
+    pub id: String,
+    pub meeting: String,
+    pub race_no: i64,
+    pub horse: String,
 }

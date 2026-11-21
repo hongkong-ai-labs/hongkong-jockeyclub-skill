@@ -4,5 +4,5 @@ use anyhow::Result;
 
 fn main() -> Result<()> {
     let client = hkjc::api::Client::new()?;
-    hkjc::mcp::serve(client)
+    hkjc::mcp::serve_blocking(client)
 }
