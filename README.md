@@ -51,6 +51,7 @@ method. `hkjc update --check` only reports.
 ```bash
 hkjc meetings
 hkjc meetings --venue ST
+hkjc --lang zh meetings              # Traditional Chinese labels and names
 hkjc card --race 7
 hkjc odds --race 1 --types WIN,PLA,QIN
 hkjc results --date 2026-11-18 --venue HV --race 4
@@ -84,6 +85,10 @@ hkjc update --check
 
 Add `--json` for structured output, or `--csv` for RFC 4180 rows that open
 directly in a spreadsheet. `--csv` and `--json` are mutually exclusive.
+`--lang zh` (also `zh-Hant`, `zh-HK`) switches the human-readable tables and
+messages to Traditional Chinese, using Chinese horse, jockey, trainer, team and
+venue names when HKJC publishes them. JSON and CSV keep stable English field
+names and values.
 
 `watch` polls the live card and reports odds moves and scratchings. Add
 `--record` to store each poll, `--webhook URL` to POST changes as JSON, or
@@ -125,6 +130,27 @@ Tools: `hk_race_meetings`, `hk_race_card`, `hk_race_odds`, `hk_race_results`,
 `hk_football_match`, `hk_marksix_results`, `hk_marksix_latest`,
 `hk_marksix_stats`, `hk_marksix_check`, `hk_source_health`.
 
+### HTTP transport
+
+For clients that cannot launch a local process, serve the same tools over
+streamable HTTP:
+
+```bash
+hkjc mcp --http                       # http://127.0.0.1:8765/mcp
+hkjc mcp --http 0.0.0.0:8765 --token "$HKJC_MCP_TOKEN"
+```
+
+`POST /mcp` takes one JSON-RPC request and returns one JSON response;
+notifications return `202 Accepted`. `GET` is not supported because this server
+has no server-initiated stream. The endpoint is stateless: there is no session
+id to carry between requests.
+
+Binding a non-loopback address requires a bearer token, which can be supplied
+with `--token` or `HKJC_MCP_TOKEN`. Requests must send
+`Authorization: Bearer <token>`. The server also rejects browser `Origin`
+headers that are not localhost. Keep the listener behind a trusted network or
+reverse proxy; the token is the only authentication layer.
+
 ## Data
 
 - `https://info.cld.hkjc.com/graphql/base/` — race meetings, race cards,
@@ -140,6 +166,9 @@ Tools: `hk_race_meetings`, `hk_race_card`, `hk_race_odds`, `hk_race_results`,
 the season, including future meetings. Historical results, barrier trials and
 sectional times need an actual race or trial day. Mark Six history is a capped
 recent window, and an explicit date range must span about three months or less.
+HKJC's public football endpoints publish matches and odds, not league tables, so
+`hkjc` does not fabricate standings.
+
 Standings default to the current season; pass `--season 25/26` for a previous
 one. Odds, declarations and results change; check HKJC for confirmation.
 
@@ -152,15 +181,16 @@ one. Odds, declarations and results change; check HKJC for confirmation.
 | CSV | `<command>` with `--csv` | Spreadsheets and data pipelines |
 | Watch | `hkjc watch` | Odds moves, scratchings and webhook alerts |
 | MCP stdio | `hkjc mcp` | Desktop and CLI MCP clients |
+| MCP HTTP | `hkjc mcp --http` | Remote MCP clients and containers |
 | Container | `docker run --rm -i hkjc mcp` | No local Rust toolchain |
 
 ### MCP and authentication
 
-This server is **stdio-only**: the client launches the process and speaks MCP
-over stdin/stdout. There is no listening port, so there is no network
-authentication layer and no API-key setting. Optional API keys in this project
-family apply only to servers that expose an HTTP transport. Keep the process
-local and let the MCP client manage it.
+The default transport is **stdio**: the client launches the process and speaks
+MCP over stdin/stdout, with no listening port. The optional HTTP transport is
+started explicitly with `hkjc mcp --http`; it requires a bearer token when it
+listens beyond loopback. Keep the stdio process local and let the MCP client
+manage it.
 
 Typical client entry:
 
@@ -183,6 +213,8 @@ If the client does not inherit `PATH`, use the absolute installed path.
 docker build -t hkjc .
 docker run --rm hkjc --help
 docker run --rm -i hkjc mcp          # stdio MCP
+docker run --rm -p 8765:8765 -e HKJC_MCP_TOKEN="$TOKEN" \
+  hkjc mcp --http 0.0.0.0:8765       # remote MCP
 docker compose run --rm stdio             # same, through Compose
 ```
 
@@ -200,9 +232,9 @@ non-root user, and defaults to `--help` so a bare `docker run` is harmless.
 ### Cloudflare and WASM
 
 There is no Worker or WASM deployment. The binary talks directly to upstream
-HTTP APIs over TLS and uses a Tokio runtime; packaging it as a stdio server is
-the supported integration. A Worker would need a separate HTTP/JavaScript
-adapter and is out of scope for this repo.
+HTTP APIs over TLS and uses a Tokio runtime; stdio and the built-in HTTP
+transport are the supported integrations. A Worker would need a separate
+HTTP/JavaScript adapter and is out of scope for this repo.
 
 ### Releases
 

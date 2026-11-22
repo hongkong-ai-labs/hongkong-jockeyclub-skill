@@ -3,6 +3,7 @@
 pub mod api;
 pub mod csv;
 pub mod history;
+pub mod lang;
 pub mod mcp;
 pub mod model;
 pub mod queries;

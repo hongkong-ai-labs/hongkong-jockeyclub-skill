@@ -7,6 +7,12 @@ and the project uses semantic versioning.
 
 ### Added
 
+- `--lang zh` turns the human-readable CLI into Traditional Chinese, including
+  CJK-aware table alignment and Chinese horse, jockey, trainer, team and venue
+  names when HKJC publishes them. JSON and CSV keep stable English keys.
+- Optional streamable HTTP transport for the MCP server: `hkjc mcp --http`
+  serves `POST /mcp` locally, with bearer-token authentication required for
+  non-loopback binds. The default remains stdio.
 - Season fixtures, HKJC football match lists and odds boards, and official
   jockey, trainer and horse profiles with name lookup, in both the CLI and the
   MCP server (18 tools).
@@ -27,6 +33,8 @@ iCalendar feed.
 
 ### Fixed
 
+- Table columns now use terminal display width, so Chinese labels and names
+  stay aligned.
 - Fixture lists now come from the published calendar instead of the GraphQL
   endpoint, which only returned meetings already run.
 - Profile parsing tolerates spaced table headers and inline `: value` cells.
