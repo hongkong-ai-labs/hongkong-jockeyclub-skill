@@ -3,6 +3,7 @@
 //! The GraphQL endpoint accepts only whitelisted operation documents, so every
 //! request uses one of the verbatim queries in [`crate::queries`].
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -19,6 +20,23 @@ use crate::queries;
 const GRAPHQL: &str = "https://info.cld.hkjc.com/graphql/base/";
 const RESULTS_PAGE: &str =
     "https://racing.hkjc.com/racing/information/English/Racing/LocalResults.aspx";
+const TRIALS_PAGE: &str = "https://racing.hkjc.com/en-us/local/information/btresult";
+const SECTIONALS_PAGE: &str =
+    "https://racing.hkjc.com/en-us/local/information/displaysectionaltime";
+const FIXTURES_PAGE: &str =
+    "https://racing.hkjc.com/racing/information/English/Racing/Fixture.aspx";
+const PROFILES_PAGE: &str = "https://racing.hkjc.com/en-us/local/information";
+
+/// Transient failures that are worth retrying.
+fn retryable(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+}
+
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_millis(400 * u64::from(attempt).max(1))
+}
 
 /// Venue code to human name.
 pub fn venue_name(code: &str) -> String {
@@ -87,29 +105,54 @@ impl Client {
         })
     }
 
+    /// Drop every cached response, so the next call fetches fresh data.
+    pub fn clear_cache(&self) {
+        self.cache.lock().expect("cache poisoned").clear();
+    }
+
     async fn cached_text(&self, url: &str, ttl: Duration) -> Result<String> {
         if let Some((at, body)) = self.cache.lock().expect("cache poisoned").get(url).cloned()
             && at.elapsed() < ttl
         {
             return Ok(body);
         }
-        let response = self
-            .http
-            .get(url)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .send()
-            .await
-            .with_context(|| format!("requesting {url}"))?;
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            bail!("{url} returned HTTP {status}");
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self
+                .http
+                .get(url)
+                .header("Accept", "text/html,application/xhtml+xml")
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    if retryable(status) && attempt < 3 {
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                    let body = response.text().await?;
+                    if !status.is_success() {
+                        bail!("{url} returned HTTP {status}");
+                    }
+                    self.cache
+                        .lock()
+                        .expect("cache poisoned")
+                        .insert(url.to_string(), (Instant::now(), body.clone()));
+                    return Ok(body);
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < 3 {
+                        tokio::time::sleep(backoff(attempt)).await;
+                    }
+                }
+            }
         }
-        self.cache
-            .lock()
-            .expect("cache poisoned")
-            .insert(url.to_string(), (Instant::now(), body.clone()));
-        Ok(body)
+        Err(last_error
+            .map(anyhow::Error::from)
+            .unwrap_or_else(|| anyhow::anyhow!("requesting {url}")))
+        .with_context(|| format!("requesting {url}"))
     }
 
     async fn graphql<T: DeserializeOwned>(
@@ -130,31 +173,51 @@ impl Client {
         {
             return decode::<T>(&body).context("decoding cached HKJC response");
         }
-        let response = self
-            .http
-            .post(GRAPHQL)
-            .header("Accept", "application/json")
-            .header("Referer", "https://bet.hkjc.com/")
-            .header("Origin", "https://bet.hkjc.com")
-            .json(&json!({
-                "operationName": operation,
-                "query": query,
-                "variables": variables,
-            }))
-            .send()
-            .await
-            .context("contacting the HKJC GraphQL API")?;
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            bail!("HKJC GraphQL returned HTTP {status}: {}", body.trim());
+        let request = || {
+            self.http
+                .post(GRAPHQL)
+                .header("Accept", "application/json")
+                .header("Referer", "https://bet.hkjc.com/")
+                .header("Origin", "https://bet.hkjc.com")
+                .json(&json!({
+                    "operationName": operation,
+                    "query": query,
+                    "variables": variables,
+                }))
+                .send()
+        };
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match request().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if retryable(status) && attempt < 3 {
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                    let body = response.text().await?;
+                    if !status.is_success() {
+                        bail!("HKJC GraphQL returned HTTP {status}: {}", body.trim());
+                    }
+                    let data = decode::<T>(&body).context("decoding the HKJC GraphQL response")?;
+                    self.cache
+                        .lock()
+                        .expect("cache poisoned")
+                        .insert(key, (Instant::now(), body));
+                    return Ok(data);
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < 3 {
+                        tokio::time::sleep(backoff(attempt)).await;
+                    }
+                }
+            }
         }
-        let data = decode::<T>(&body).context("decoding the HKJC GraphQL response")?;
-        self.cache
-            .lock()
-            .expect("cache poisoned")
-            .insert(key, (Instant::now(), body));
-        Ok(data)
+        Err(last_error
+            .map(anyhow::Error::from)
+            .unwrap_or_else(|| anyhow::anyhow!("contacting the HKJC GraphQL API")))
+        .context("contacting the HKJC GraphQL API")
     }
 
     /// Race meetings and their race cards.
@@ -300,6 +363,148 @@ impl Client {
         fixtures
             .dedup_by(|left, right| left.date == right.date && left.venue_code == right.venue_code);
         Ok(fixtures)
+    }
+
+    /// Jockey or trainer championship standings for a season and racecourse.
+    ///
+    /// `season` is a season code such as `25/26`; `None` means the current
+    /// season. `venue` limits the table to ST or HV, matching the racecourse
+    /// selector on the HKJC ranking pages.
+    pub async fn standings(
+        &self,
+        kind: &str,
+        season: Option<&str>,
+        venue: Option<&str>,
+    ) -> Result<StandingsView> {
+        let kind = kind.to_lowercase();
+        let season = season.filter(|value| {
+            let normalized = value.trim().to_lowercase();
+            !normalized.is_empty() && normalized != "current"
+        });
+        let (operation, query) = match kind.as_str() {
+            "jockey" | "jockeys" => ("rw_GetJockeyRanking", queries::JOCKEY_STANDINGS),
+            "trainer" | "trainers" => ("rw_GetTrainerRanking", queries::TRAINER_STANDINGS),
+            other => bail!("unknown standings kind {other:?}; use jockey or trainer"),
+        };
+        let data: StandingsData = self
+            .graphql(
+                operation,
+                query,
+                json!({ "season": season }),
+                Duration::from_secs(300),
+            )
+            .await?;
+        let stats = if kind.starts_with("jockey") {
+            data.jockey_stat
+        } else {
+            data.trainer_stat
+        };
+        Ok(standings_view(&kind, stats, venue))
+    }
+
+    /// Barrier trial results for one date.
+    pub async fn trials(&self, date: NaiveDate) -> Result<TrialsView> {
+        let url = format!(
+            "{TRIALS_PAGE}?Date={:04}/{:02}/{:02}",
+            date.year(),
+            date.month(),
+            date.day()
+        );
+        let html = self.cached_text(&url, Duration::from_secs(3600)).await?;
+        let mut view = parse_trials_page(&html, date)?;
+        if view.batches.is_empty() {
+            bail!("no barrier trials are published for {date}");
+        }
+        view.date = date.to_string();
+        Ok(view)
+    }
+
+    /// Sectional times and per-horse running positions for one race.
+    pub async fn sectionals(&self, date: NaiveDate, race_no: i64) -> Result<SectionalsView> {
+        let url = format!(
+            "{SECTIONALS_PAGE}?racedate={:02}/{:02}/{:04}&RaceNo={race_no}",
+            date.day(),
+            date.month(),
+            date.year()
+        );
+        let html = self.cached_text(&url, Duration::from_secs(3600)).await?;
+        let mut view = parse_sectionals_page(&html, race_no)?;
+        if view.horses.is_empty() {
+            bail!("no sectional times are published for {date} race {race_no}");
+        }
+        view.date = date.to_string();
+        Ok(view)
+    }
+
+    /// Endpoint health checks used by `hkjc doctor`.
+    pub async fn health(&self) -> Vec<HealthCheck> {
+        let today = hong_kong_today();
+        let checks: Vec<(&str, String)> = vec![
+            ("graphql", "race meetings".to_string()),
+            (
+                "fixtures",
+                format!(
+                    "{FIXTURES_PAGE}?CalYear={}&CalMonth={:02}",
+                    today.year(),
+                    today.month()
+                ),
+            ),
+            (
+                "results",
+                format!(
+                    "{RESULTS_PAGE}?RaceDate={:02}/{:02}/{:04}&Racecourse=ST&RaceNo=1",
+                    today.day(),
+                    today.month(),
+                    today.year()
+                ),
+            ),
+            (
+                "trials",
+                format!(
+                    "{TRIALS_PAGE}?Date={:04}/{:02}/{:02}",
+                    today.year(),
+                    today.month(),
+                    today.day()
+                ),
+            ),
+            (
+                "profiles",
+                format!("{PROFILES_PAGE}/jockeyprofile?jockeyid=PZ"),
+            ),
+        ];
+        let mut out = Vec::new();
+        for (name, target) in checks {
+            let started = Instant::now();
+            let result = if name == "graphql" {
+                self.graphql::<MeetingsData>(
+                    "raceMeetings",
+                    queries::RACE_MEETINGS,
+                    json!({ "date": null, "venueCode": null }),
+                    Duration::ZERO,
+                )
+                .await
+                .map(|_| ())
+            } else {
+                self.cached_text(&target, Duration::ZERO).await.map(|_| ())
+            };
+            out.push(match result {
+                Ok(()) => HealthCheck {
+                    name: name.to_string(),
+                    url: target,
+                    ok: true,
+                    detail: "ok".to_string(),
+                    millis: started.elapsed().as_millis() as u64,
+                },
+                Err(error) => HealthCheck {
+                    name: name.to_string(),
+                    url: target,
+                    ok: false,
+                    detail: format!("{error:#}"),
+                    millis: started.elapsed().as_millis() as u64,
+                },
+            });
+        }
+        out
     }
 
     /// Football matches currently offered, with HAD odds.
@@ -1458,6 +1663,7 @@ pub fn parse_results_page(html: &str, race_no: i64) -> Result<RaceResultView> {
         placings,
         dividends,
         incidents,
+        replays: extract_replays(&document),
     })
 }
 
@@ -1737,6 +1943,450 @@ pub fn parse_profile(html: &str, kind: ProfileKind, id: &str, source: &str) -> P
     }
 }
 
+// ---------------------------------------------------------------------------
+// Standings, barrier trials and sectional times
+// ---------------------------------------------------------------------------
+
+/// Parse a Mark Six ticket such as `3, 12, 18, 22, 31, 44`.
+pub fn parse_ticket(value: &str) -> Result<Vec<u8>> {
+    let mut numbers = Vec::new();
+    for part in value.split([',', ' ', ';', '-', '|']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let number: u8 = part
+            .parse()
+            .map_err(|_| anyhow::anyhow!("ticket numbers must be 1-49, got {part:?}"))?;
+        if !(1..=49).contains(&number) {
+            bail!("ticket numbers must be 1-49, got {number}");
+        }
+        numbers.push(number);
+    }
+    numbers.sort_unstable();
+    numbers.dedup();
+    if numbers.len() != 6 {
+        bail!(
+            "a Mark Six ticket needs 6 different numbers, got {}",
+            numbers.len()
+        );
+    }
+    Ok(numbers)
+}
+
+/// Check one ticket against a draw and resolve the prize division.
+pub fn check_mark_six(ticket: &[u8], draw: &MarkSixDrawView) -> MarkSixCheckView {
+    let matches: Vec<u8> = ticket
+        .iter()
+        .copied()
+        .filter(|number| draw.numbers.contains(number))
+        .collect();
+    let extra_matched = draw.extra.is_some_and(|extra| ticket.contains(&extra));
+    let division = match (matches.len(), extra_matched) {
+        (6, _) => Some(1),
+        (5, true) => Some(2),
+        (5, false) => Some(3),
+        (4, true) => Some(4),
+        (4, false) => Some(5),
+        (3, true) => Some(6),
+        (3, false) => Some(7),
+        _ => None,
+    };
+    let dividend = division
+        .and_then(|division| draw.prizes.iter().find(|prize| prize.division == division))
+        .map(|prize| prize.dividend.clone())
+        .unwrap_or_default();
+    let message = match division {
+        Some(division) => format!("Division {division} winner"),
+        None => "No prize".to_string(),
+    };
+    MarkSixCheckView {
+        draw_date: draw.draw_date.clone(),
+        draw_no: draw.draw_no,
+        ticket: ticket.to_vec(),
+        drawn: draw.numbers.clone(),
+        extra: draw.extra,
+        matches,
+        extra_matched,
+        division,
+        dividend,
+        message,
+    }
+}
+
+/// Build a standings table, optionally limited to one racecourse.
+pub fn standings_view(kind: &str, stats: Vec<RankStat>, venue: Option<&str>) -> StandingsView {
+    let venue = venue.map(|value| value.to_uppercase());
+    let mut totals: Vec<(RankStat, RankTotals)> = stats
+        .into_iter()
+        .filter_map(|stat| {
+            let totals = rank_totals(&stat, venue.as_deref());
+            (totals.starts > 0).then_some((stat, totals))
+        })
+        .collect();
+    totals.sort_by(|(left_stat, left), (right_stat, right)| {
+        right
+            .first
+            .cmp(&left.first)
+            .then_with(|| right.second.cmp(&left.second))
+            .then_with(|| right.third.cmp(&left.third))
+            .then_with(|| right.fourth.cmp(&left.fourth))
+            .then_with(|| right.fifth.cmp(&left.fifth))
+            .then_with(|| {
+                right
+                    .stakes
+                    .partial_cmp(&left.stakes)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| left_stat.name_en.cmp(&right_stat.name_en))
+    });
+
+    let season = totals
+        .first()
+        .map(|(stat, _)| stat.season.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(current_season_label);
+    let mut rows = Vec::with_capacity(totals.len());
+    let mut rank = 0;
+    let mut previous: Option<(i64, i64, i64, i64, i64)> = None;
+    for (index, (stat, total)) in totals.iter().enumerate() {
+        let key = (
+            total.first,
+            total.second,
+            total.third,
+            total.fourth,
+            total.fifth,
+        );
+        if previous != Some(key) {
+            rank = index as i64 + 1;
+            previous = Some(key);
+        }
+        rows.push(StandingRowView {
+            rank,
+            name: stat.name_en.clone(),
+            name_zh: stat.name_ch.clone(),
+            id: if stat.id.is_empty() {
+                stat.code.clone()
+            } else {
+                stat.id.clone()
+            },
+            first: total.first,
+            second: total.second,
+            third: total.third,
+            fourth: total.fourth,
+            fifth: total.fifth,
+            starts: total.starts,
+            stakes_won: format!("{:.0}", total.stakes),
+            win_rate: if total.starts > 0 {
+                (total.first as f64 * 1000.0 / total.starts as f64).round() / 10.0
+            } else {
+                0.0
+            },
+        });
+    }
+    StandingsView {
+        season,
+        kind: kind.to_string(),
+        venue: venue.unwrap_or_else(|| "ALL".to_string()),
+        rows,
+    }
+}
+
+struct RankTotals {
+    first: i64,
+    second: i64,
+    third: i64,
+    fourth: i64,
+    fifth: i64,
+    starts: i64,
+    stakes: f64,
+}
+
+fn rank_totals(stat: &RankStat, venue: Option<&str>) -> RankTotals {
+    let mut totals = RankTotals {
+        first: 0,
+        second: 0,
+        third: 0,
+        fourth: 0,
+        fifth: 0,
+        starts: 0,
+        stakes: 0.0,
+    };
+    let splits: Vec<&RankSplit> = match venue {
+        Some(venue) => stat
+            .ssn_stat
+            .iter()
+            .filter(|split| split.ven.eq_ignore_ascii_case(venue) && split.trk != "ALL")
+            .collect(),
+        None => {
+            let all: Vec<&RankSplit> = stat
+                .ssn_stat
+                .iter()
+                .filter(|split| split.ven == "ALL" && split.trk == "ALL")
+                .collect();
+            if all.is_empty() {
+                stat.ssn_stat
+                    .iter()
+                    .filter(|split| split.ven != "ALL")
+                    .collect()
+            } else {
+                all
+            }
+        }
+    };
+    for split in splits {
+        totals.first += split.num_first;
+        totals.second += split.num_second;
+        totals.third += split.num_third;
+        totals.fourth += split.num_fourth;
+        totals.fifth += split.num_fifth;
+        totals.starts += split.num_starts;
+        totals.stakes += split.stake_won.trim().parse::<f64>().unwrap_or(0.0);
+    }
+    totals
+}
+
+fn current_season_label() -> String {
+    let today = hong_kong_today();
+    let (start, end) = season_bounds(today);
+    format!("{:02}/{:02}", start.year() % 100, end.year() % 100)
+}
+
+/// Parse the barrier-trial results page.
+pub fn parse_trials_page(html: &str, date: NaiveDate) -> Result<TrialsView> {
+    let document = Html::parse_document(html);
+    let row_selector = Selector::parse("tr").expect("valid selector");
+    let cell_selector = Selector::parse("td, th").expect("valid selector");
+    let mut batches: Vec<TrialBatchView> = Vec::new();
+    let mut header_seen = false;
+    for row in document.select(&row_selector) {
+        let cells: Vec<String> = row
+            .select(&cell_selector)
+            .map(|cell| normalize(&cell.text().collect::<Vec<_>>().join(" ")))
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        if cells.len() == 1 && cells[0].starts_with("Batch ") {
+            let mut parts = cells[0].split(" - ");
+            let batch = parts.next().unwrap_or_default().to_string();
+            let venue = parts.next().unwrap_or_default().to_string();
+            let distance = parts.next().unwrap_or_default().to_string();
+            batches.push(TrialBatchView {
+                batch,
+                venue,
+                distance,
+                going: String::new(),
+                time: String::new(),
+                sectional_time: String::new(),
+                horses: Vec::new(),
+            });
+            header_seen = false;
+            continue;
+        }
+        let Some(current) = batches.last_mut() else {
+            continue;
+        };
+        if let Some(going) = cells.iter().find_map(|cell| cell.strip_prefix("Going:")) {
+            current.going = going.trim().to_string();
+            if let Some(time) = cells.iter().find_map(|cell| cell.strip_prefix("Time:")) {
+                current.time = time.trim().to_string();
+            }
+            continue;
+        }
+        if let Some(sectional) = cells[0].strip_prefix("Sectional Time:") {
+            current.sectional_time = sectional.trim().to_string();
+            continue;
+        }
+        if cells[0].eq_ignore_ascii_case("Horse") {
+            header_seen = true;
+            continue;
+        }
+        if !header_seen || cells.len() < 10 {
+            continue;
+        }
+        let get = |index: usize| cells.get(index).cloned().unwrap_or_default();
+        let horse_cell = get(0);
+        if horse_cell.is_empty() || horse_cell.starts_with('B') && horse_cell.contains(':') {
+            continue;
+        }
+        let (horse, horse_id) = split_horse_id(&horse_cell);
+        current.horses.push(TrialHorseView {
+            horse,
+            horse_id,
+            jockey: get(1),
+            trainer: get(2),
+            draw: get(3),
+            gear: get(4),
+            lengths_behind: get(5),
+            running_position: get(6),
+            time: get(7),
+            result: get(8),
+            comment: get(9),
+        });
+    }
+    batches.retain(|batch| !batch.horses.is_empty());
+    Ok(TrialsView {
+        date: date.to_string(),
+        batches,
+    })
+}
+
+fn split_horse_id(value: &str) -> (String, String) {
+    let trimmed = value.trim();
+    if let Some(open) = trimmed.rfind('(')
+        && trimmed.ends_with(')')
+    {
+        let id = trimmed[open + 1..trimmed.len() - 1].to_string();
+        return (trimmed[..open].trim().to_string(), id);
+    }
+    (trimmed.to_string(), String::new())
+}
+
+/// Parse the sectional-time page.
+pub fn parse_sectionals_page(html: &str, race_no: i64) -> Result<SectionalsView> {
+    let document = Html::parse_document(html);
+    let row_selector = Selector::parse("tr").expect("valid selector");
+    let cell_selector = Selector::parse("td, th").expect("valid selector");
+    let mut race_times = Vec::new();
+    let mut sectional_times = Vec::new();
+    let mut horses = Vec::new();
+    let mut section_count = 0usize;
+    for row in document.select(&row_selector) {
+        let cells: Vec<String> = row
+            .select(&cell_selector)
+            .map(|cell| normalize(&cell.text().collect::<Vec<_>>().join(" ")))
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        if let Some(rest) = cells[0].strip_prefix("Race Time:") {
+            let mut values = vec![rest.trim().to_string()];
+            values.extend(cells[1..].iter().cloned());
+            race_times = values
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .map(|value| value.trim_matches(|c| c == '(' || c == ')').to_string())
+                .collect();
+            continue;
+        }
+        if let Some(rest) = cells[0].strip_prefix("Sectional Time:") {
+            let mut values = vec![rest.trim().to_string()];
+            values.extend(cells[1..].iter().cloned());
+            sectional_times = values
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect();
+            continue;
+        }
+        if cells.iter().any(|cell| cell.contains("1st Sec")) {
+            section_count = cells.iter().filter(|cell| cell.contains("Sec.")).count();
+            continue;
+        }
+        if section_count == 0 || cells.len() < 4 {
+            continue;
+        }
+        let Some(place) = cells[0].parse::<i64>().ok() else {
+            continue;
+        };
+        if place <= 0 || cells[1].is_empty() || cells[2].is_empty() {
+            continue;
+        }
+        let finish_index = (3 + section_count).min(cells.len() - 1);
+        let mut splits = Vec::new();
+        for cell in cells.iter().take(finish_index).skip(3) {
+            splits.push(parse_sectional_split(cell));
+        }
+        horses.push(SectionalHorseView {
+            place: cells[0].clone(),
+            horse_no: cells[1].clone(),
+            horse: cells[2].clone(),
+            splits,
+            finish_time: cells.get(finish_index).cloned().unwrap_or_default(),
+        });
+    }
+    Ok(SectionalsView {
+        date: String::new(),
+        race_no,
+        race_times,
+        sectional_times,
+        horses,
+    })
+}
+
+fn looks_like_time(token: &str) -> bool {
+    token.contains('.')
+        && token
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == '.' || character == ':')
+}
+
+fn parse_sectional_split(raw: &str) -> SectionalSplitView {
+    let mut split = SectionalSplitView {
+        position: None,
+        margin: String::new(),
+        time: String::new(),
+        fractions: Vec::new(),
+    };
+    let mut tokens = raw.split_whitespace();
+    if let Some(first) = tokens.next() {
+        split.position = first.parse::<i64>().ok();
+        if split.position.is_none() {
+            return split;
+        }
+    }
+    let mut rest: Vec<&str> = tokens.collect();
+    if let Some(first) = rest.first()
+        && !looks_like_time(first)
+    {
+        split.margin = (*first).to_string();
+        rest.remove(0);
+    }
+    if let Some(first) = rest.first()
+        && looks_like_time(first)
+    {
+        split.time = (*first).to_string();
+        split.fractions = rest[1..].iter().map(|value| (*value).to_string()).collect();
+    }
+    split
+}
+
+fn extract_replays(document: &Html) -> Vec<ReplayView> {
+    let selector = Selector::parse("a[href*='video-player-iframe']").expect("valid selector");
+    let mut replays: Vec<ReplayView> = Vec::new();
+    for anchor in document.select(&selector) {
+        let Some(href) = anchor.value().attr("href") else {
+            continue;
+        };
+        if replays.iter().any(|replay| replay.url == href) {
+            continue;
+        }
+        let label = normalize(&anchor.text().collect::<Vec<_>>().join(" "));
+        let label = if label.is_empty() {
+            let kind = href
+                .split("type=")
+                .nth(1)
+                .and_then(|rest| rest.split('&').next())
+                .unwrap_or("replay");
+            match kind {
+                "replay-full" => "Multi Angle Race Replay".to_string(),
+                "replay-aerial" => "Aerial Virtual Replay".to_string(),
+                "passthrough" => "Pass Through Analysis".to_string(),
+                other => other.to_string(),
+            }
+        } else {
+            label
+        };
+        let url = if href.starts_with("http") {
+            href.to_string()
+        } else {
+            format!("https://racing.hkjc.com{href}")
+        };
+        replays.push(ReplayView { label, url });
+    }
+    replays
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1874,6 +2524,39 @@ mod tests {
     }
 
     #[test]
+    fn mark_six_check_awards_prize_divisions() {
+        let draw = MarkSixDrawView {
+            draw_id: "1".to_string(),
+            year: "2026".to_string(),
+            draw_no: 1,
+            draw_date: "2026-11-19".to_string(),
+            status: String::new(),
+            snowball: String::new(),
+            numbers: vec![1, 2, 3, 4, 5, 6],
+            extra: Some(7),
+            jackpot: String::new(),
+            turnover: String::new(),
+            unit_bet: String::new(),
+            estimated_first_prize: String::new(),
+            prizes: Vec::new(),
+        };
+        let cases = [
+            (vec![1, 2, 3, 4, 5, 6], Some(1)),
+            (vec![1, 2, 3, 4, 5, 7], Some(2)),
+            (vec![1, 2, 3, 4, 5, 8], Some(3)),
+            (vec![1, 2, 3, 4, 7, 8], Some(4)),
+            (vec![1, 2, 3, 4, 8, 9], Some(5)),
+            (vec![1, 2, 3, 7, 8, 9], Some(6)),
+            (vec![1, 2, 3, 8, 9, 10], Some(7)),
+            (vec![1, 2, 7, 8, 9, 10], None),
+        ];
+        for (ticket, expected) in cases {
+            let view = check_mark_six(&ticket, &draw);
+            assert_eq!(view.division, expected, "ticket {ticket:?}");
+        }
+    }
+
+    #[test]
     fn parses_fixture_calendar_cells() {
         let html = r#"<table>
           <tr><td><span class="f_fl f_fs14">2</span><span class="f_fr">
@@ -1887,5 +2570,108 @@ mod tests {
         assert_eq!(fixtures[0].venue_code, "HV");
         assert_eq!(fixtures[1].date, "2026-12-25");
         assert_eq!(fixtures[1].venue_code, "ST");
+    }
+
+    #[test]
+    fn parses_trial_batches_and_horses() {
+        let html = r#"<table><tr><td>Batch 1 - CONGHUA TURF - 1000m</td></tr>
+          <tr><td>Going: GOOD</td><td>Time: 0.57.67</td></tr>
+          <tr><td>Sectional Time: 13.5 21.4 22.7</td></tr></table>
+        <table>
+          <tr><th>Horse</th><th>Jockey</th><th>Trainer</th><th>Draw</th><th>Gear</th>
+              <th>LBW</th><th>Running Position</th><th>Time</th><th>Result</th><th>Comment</th></tr>
+          <tr><td>SOLID STATE (L411)</td><td>A Badel</td><td>F C Lor</td><td>08</td><td></td>
+              <td></td><td>4 3 1</td><td>0.57.67</td><td>Passed</td><td>Hit the front late.</td></tr>
+        </table>"#;
+        let view = parse_trials_page(html, NaiveDate::from_ymd_opt(2026, 8, 31).unwrap()).unwrap();
+        assert_eq!(view.batches.len(), 1);
+        let batch = &view.batches[0];
+        assert_eq!(batch.batch, "Batch 1");
+        assert_eq!(batch.venue, "CONGHUA TURF");
+        assert_eq!(batch.distance, "1000m");
+        assert_eq!(batch.going, "GOOD");
+        assert_eq!(batch.horses.len(), 1);
+        assert_eq!(batch.horses[0].horse, "SOLID STATE");
+        assert_eq!(batch.horses[0].horse_id, "L411");
+        assert_eq!(batch.horses[0].result, "Passed");
+    }
+
+    #[test]
+    fn parses_sectional_positions_and_split_fractions() {
+        let html = r#"<table><tr><td>Race Time:</td><td>(28.33)</td><td>(51.43)</td></tr>
+          <tr><td>Sectional Time:</td><td>28.33</td><td>23.10</td></tr></table>
+        <table>
+          <tr><th>Finishing Order</th><th>Horse No.</th><th>Horse</th><th>Running Position</th><th>Time</th></tr>
+          <tr><td>Sectional Time</td></tr>
+          <tr><td>1st Sec.</td><td>2nd Sec.</td></tr>
+          <tr><td>2</td><td>12</td><td>RED BRICK WARRIOR (K580)</td>
+              <td>1 1 28.33</td><td>1 3/4 23.10 12.04 11.93</td><td>1:40.34</td></tr>
+        </table>"#;
+        let view = parse_sectionals_page(html, 4).unwrap();
+        assert_eq!(view.race_times, ["28.33", "51.43"]);
+        assert_eq!(view.horses.len(), 1);
+        let horse = &view.horses[0];
+        assert_eq!(horse.horse_no, "12");
+        assert_eq!(horse.finish_time, "1:40.34");
+        assert_eq!(horse.splits[0].position, Some(1));
+        assert_eq!(horse.splits[0].time, "28.33");
+        assert_eq!(horse.splits[1].margin, "3/4");
+        assert_eq!(horse.splits[1].fractions, ["12.04", "11.93"]);
+    }
+
+    #[test]
+    fn standings_sum_the_aggregate_not_every_venue() {
+        let stat = RankStat {
+            code: "PZ".to_string(),
+            name_en: "Z Purton".to_string(),
+            name_ch: "潘頓".to_string(),
+            status: "Active".to_string(),
+            id: "PZ".to_string(),
+            season: "26/27".to_string(),
+            is_cur_ssn: true,
+            ssn_stat: vec![
+                RankSplit {
+                    num_first: 34,
+                    num_starts: 157,
+                    stake_won: "42833525".to_string(),
+                    trk: "ALL".to_string(),
+                    ven: "ALL".to_string(),
+                    ..Default::default()
+                },
+                RankSplit {
+                    num_first: 8,
+                    num_starts: 30,
+                    stake_won: "8080625".to_string(),
+                    trk: "TURF".to_string(),
+                    ven: "HV".to_string(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let view = standings_view("jockey", vec![stat.clone()], None);
+        assert_eq!(view.rows[0].first, 34);
+        assert_eq!(view.rows[0].starts, 157);
+        let at_hv = standings_view("jockey", vec![stat], Some("HV"));
+        assert_eq!(at_hv.rows[0].first, 8);
+        assert_eq!(at_hv.rows[0].starts, 30);
+    }
+
+    #[test]
+    fn extracts_replay_links_from_results() {
+        let html = r#"<p class="f_fs13 icon_link">
+          <a href="/contentAsset/videoplayer_v4/video-player-iframe_v4.html?type=replay-full&amp;date=20261118">
+            Multi Angle Race Replay</a>
+          <a href="/contentAsset/videoplayer_v4/video-player-iframe_v4.html?type=replay-aerial&amp;date=20261118"></a>
+        </p>"#;
+        let document = Html::parse_document(html);
+        let replays = extract_replays(&document);
+        assert_eq!(replays.len(), 2);
+        assert_eq!(replays[0].label, "Multi Angle Race Replay");
+        assert_eq!(replays[1].label, "Aerial Virtual Replay");
+        assert!(
+            replays[0]
+                .url
+                .starts_with("https://racing.hkjc.com/contentAsset/")
+        );
     }
 }

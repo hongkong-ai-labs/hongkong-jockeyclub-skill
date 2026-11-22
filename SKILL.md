@@ -1,6 +1,6 @@
 ---
 name: hongkong-jockeyclub-skill
-description: Hong Kong Jockey Club data — horse racing fixtures, race cards, runners, jockeys, trainers, horse profiles, barriers, live tote odds, historical results, dividends and incidents, HKJC football matches and odds, plus Mark Six draw results, jackpots, prize divisions and number frequency. Use for questions about Hong Kong racing, Sha Tin, Happy Valley, Mark Six, 六合彩, race results, football or lottery numbers.
+description: Hong Kong Jockey Club data — horse racing fixtures, race cards, runners, jockeys, trainers, championship standings, barrier trials, sectional times and pace maps, horse profiles, live tote odds with local odds history, historical results, dividends and incidents, HKJC football matches and odds, plus Mark Six draw results, ticket checks, jackpots, prize divisions and number frequency. Use for questions about Hong Kong racing, Sha Tin, Happy Valley, Mark Six, 六合彩, race results, football or lottery numbers.
 license: MIT
 ---
 
@@ -78,8 +78,23 @@ $BIN card --race 7                    # runners for race 7
 $BIN card --race 1 --json
 $BIN odds --race 1 --types WIN,PLA,QIN
 $BIN results --date 2026-11-18 --venue HV --race 4
+$BIN standings jockey --season 26/27 # championship table
+$BIN standings trainer --venue ST
+$BIN trials --date 2026-11-18         # barrier trial results
+$BIN sectionals --date 2026-11-18 --race 4
+$BIN pace --date 2026-11-18 --race 4  # running positions per section
+$BIN odds --race 1 --record           # save an odds snapshot
+$BIN history --date 2026-11-18 --venue HV --race 4
+$BIN watch --race 1 --interval 60     # poll odds moves and scratchings
+$BIN watch --webhook https://... --record
+$BIN marksix-check 1,2,3,4,5,6
+$BIN doctor                           # HKJC endpoint health
+$BIN completions zsh                  # shell completion script
+$BIN man                              # roff manual page
 $BIN fixtures                         # race meetings in the next 90 days
 $BIN fixtures --all                   # the whole season
+$BIN fixtures --next                  # only the next meeting
+$BIN fixtures --ics > races.ics       # iCalendar feed
 $BIN lookup Purton                    # find a jockey, trainer or horse
 $BIN profile jockey PZ                # official profile
 $BIN profile trainer TKH --json
@@ -95,7 +110,10 @@ $BIN mcp
 $BIN update --check
 ```
 
-Add `--json` to any command for structured output.
+Add `--json` to any command for structured output, or `--csv` for spreadsheet
+rows. Odds history from `odds --record` and `watch --record` lives in SQLite at
+`$HKJC_DB`, else `$XDG_DATA_HOME/hkjc/history.sqlite`, else
+`~/.local/share/hkjc/history.sqlite`; override with `--db PATH`.
 
 `update` detects whether the binary came from cargo, the release installer, a
 source checkout or Homebrew, and updates with that same method.
@@ -148,6 +166,10 @@ Tools:
 | `hk_race_odds` | `{ race?, types?, date?, venue? }` |
 | `hk_race_results` | `{ date?, venue?, race? }` |
 | `hk_race_fixtures` | `{ from?, to?, venue?, all? }` |
+| `hk_race_standings` | `{ kind, season?, venue? }` — kind is `jockey` or `trainer` |
+| `hk_race_trials` | `{ date? }` |
+| `hk_race_sectionals` | `{ date?, race? }` — includes the pace-map positions |
+| `hk_odds_history` | `{ date?, venue?, race?, pool?, limit? }` — snapshots saved with `odds --record` |
 | `hk_race_profile` | `{ kind, id }` — kind is `jockey`, `trainer` or `horse` |
 | `hk_race_lookup` | `{ query }` — name to profile id |
 | `hk_football_matches` | `{ from?, to?, tournament?, limit? }` |
@@ -155,6 +177,8 @@ Tools:
 | `hk_marksix_results` | `{ draws?, from?, to? }` |
 | `hk_marksix_latest` | `{}` |
 | `hk_marksix_stats` | `{ draws? }` |
+| `hk_marksix_check` | `{ numbers, draw? }` — six numbers against a draw |
+| `hk_source_health` | `{}` — endpoint availability and latency |
 
 ## Answering patterns
 
@@ -183,6 +207,10 @@ Tools:
   call the tool for the current state; never reuse an earlier answer.
 - `meetings` covers only the meeting HKJC currently publishes. For any other
   date, including future meetings, use `fixtures`.
+- `trials` and `sectionals` are published only after a trial or race day; a
+  quiet date returns an error rather than an empty table.
+- `watch` alerts describe tote odds moves and scratching changes seen locally.
+  They are not tips, and a webhook or Telegram message may arrive late.
 - Historical results are only available for actual race days. A date with no
   meeting returns an error, not an empty result.
 - Odds are tote/dividend odds. They are not fixed-odds prices and do not
@@ -208,6 +236,11 @@ Tools:
   — the month-by-month fixture calendar.
 - `https://racing.hkjc.com/en-us/local/information/jockeyprofile`,
   `.../trainerprofile` and `.../horse` — official profiles.
+- `https://racing.hkjc.com/en-us/local/info/jockey-ranking` and
+  `.../trainer-ranking` — championship standings.
+- `https://racing.hkjc.com/en-us/local/information/btresult` — barrier trials.
+- `https://racing.hkjc.com/en-us/local/information/displaysectionaltime` —
+  sectional times and running positions.
 
 All are unofficial integrations. Responses are cached briefly in-process:
 15–20 seconds for live racing data, 1 hour for fixtures and profiles, and

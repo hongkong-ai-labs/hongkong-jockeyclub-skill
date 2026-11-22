@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 use chrono::{Days, NaiveDate};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use hkjc::api::{self, Client};
 use hkjc::model::ProfileKind;
 
@@ -17,8 +17,16 @@ mod update;
 )]
 struct Cli {
     /// Print machine-readable JSON
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "csv")]
     json: bool,
+
+    /// Print RFC 4180 CSV
+    #[arg(long, global = true)]
+    csv: bool,
+
+    /// Local history database (default: XDG data directory)
+    #[arg(long, global = true, value_name = "PATH")]
+    db: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -56,12 +64,33 @@ enum Command {
         /// Comma-separated pools: WIN,PLA,QIN,QPL,FCT,TCE,TRI,FF,QTT,CWA,IWN
         #[arg(long)]
         types: Option<String>,
+        /// Save this odds board to the local history database
+        #[arg(long)]
+        record: bool,
         /// Meeting date, YYYY-MM-DD
         #[arg(long)]
         date: Option<String>,
         /// Venue code: ST, HV, CH or S1–S9
         #[arg(long, short)]
         venue: Option<String>,
+    },
+    /// Odds snapshots recorded in the local history database
+    History {
+        /// Meeting date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// Venue code: ST, HV or CH
+        #[arg(long, short, default_value = "ST")]
+        venue: String,
+        /// Race number (default 1)
+        #[arg(long, short, default_value_t = 1)]
+        race: i64,
+        /// Only this pool
+        #[arg(long)]
+        pool: Option<String>,
+        /// Maximum combinations (0 means all)
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
     },
     /// Historical race result, placings and dividends
     Results {
@@ -95,6 +124,50 @@ enum Command {
         #[arg(long, short, default_value_t = 100)]
         draws: i64,
     },
+    /// Jockey or trainer championship standings
+    Standings {
+        /// Which championship table
+        #[arg(value_enum)]
+        kind: StandingArg,
+        /// Season code such as 25/26 (default: current season)
+        #[arg(long)]
+        season: Option<String>,
+        /// Racecourse: ST or HV (default: all)
+        #[arg(long, short)]
+        venue: Option<String>,
+    },
+    /// Barrier trial results for one date
+    Trials {
+        /// Trial date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Sectional times for one race
+    Sectionals {
+        /// Race date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// Race number (default 1)
+        #[arg(long, short, default_value_t = 1)]
+        race: i64,
+    },
+    /// Pace map from the sectional running positions of one race
+    Pace {
+        /// Race date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// Race number (default 1)
+        #[arg(long, short, default_value_t = 1)]
+        race: i64,
+    },
+    /// Check a Mark Six ticket against a draw
+    MarksixCheck {
+        /// Six numbers, separated by commas or spaces
+        numbers: String,
+        /// Draw number (default: the latest draw)
+        #[arg(long)]
+        draw: Option<i64>,
+    },
     /// Season fixture list of race meetings
     Fixtures {
         /// First date, YYYY-MM-DD (default today, or the season start with --all)
@@ -109,6 +182,12 @@ enum Command {
         /// The whole published season
         #[arg(long)]
         all: bool,
+        /// Print an iCalendar feed instead of a table
+        #[arg(long)]
+        ics: bool,
+        /// Only the next meeting
+        #[arg(long)]
+        next: bool,
     },
     /// Football matches with HAD odds
     Football {
@@ -155,8 +234,60 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Poll a meeting and report odds moves and scratchings
+    Watch {
+        /// Meeting date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// Venue code: ST, HV or CH
+        #[arg(long, short)]
+        venue: Option<String>,
+        /// Only this race (default: every race on the card)
+        #[arg(long, short)]
+        race: Option<i64>,
+        /// Seconds between polls (minimum 5)
+        #[arg(long, default_value_t = 60)]
+        interval: u64,
+        /// Stop after this many polls (0 means until interrupted)
+        #[arg(long, default_value_t = 0)]
+        count: u32,
+        /// POST each change as JSON to this URL
+        #[arg(long)]
+        webhook: Option<String>,
+        /// Send changes to Telegram as BOT_TOKEN:CHAT_ID
+        #[arg(long)]
+        telegram: Option<String>,
+        /// Save every poll to the local history database
+        #[arg(long)]
+        record: bool,
+    },
+    /// Print a shell completion script
+    Completions {
+        /// Target shell
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the roff manual page
+    Man,
+    /// Check HKJC endpoint health and latency
+    Doctor,
     /// Run the MCP server over stdio
     Mcp,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum StandingArg {
+    Jockey,
+    Trainer,
+}
+
+impl StandingArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Jockey => "jockey",
+            Self::Trainer => "trainer",
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -211,6 +342,8 @@ async fn main() -> Result<()> {
             let views = data.views_for(date, venue.as_deref());
             if cli.json {
                 print_json(&views)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::meetings(&views));
             } else {
                 println!("{}", hkjc::render::meetings(&views));
             }
@@ -230,6 +363,8 @@ async fn main() -> Result<()> {
             let card = found.card(meeting);
             if cli.json {
                 print_json(&card)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::card(&card));
             } else {
                 println!("{}", hkjc::render::race_card(&card));
             }
@@ -237,6 +372,7 @@ async fn main() -> Result<()> {
         Command::Odds {
             race,
             types,
+            record,
             date,
             venue,
         } => {
@@ -261,10 +397,43 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             let view = odds.view(meeting_date, &meeting.venue_code, race);
+            if record {
+                let count = hkjc::history::record_odds(&view, cli.db.as_deref())?;
+                eprintln!("recorded {count} odds entries for race {race}");
+            }
             if cli.json {
                 print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::odds(&view));
             } else {
                 println!("{}", hkjc::render::odds(&view));
+            }
+        }
+        Command::History {
+            date,
+            venue,
+            race,
+            pool,
+            limit,
+        } => {
+            let date = match date {
+                Some(value) => api::parse_date(&value)?,
+                None => api::hong_kong_today(),
+            };
+            let view = hkjc::history::load(
+                &date.to_string(),
+                &venue,
+                race,
+                pool.as_deref(),
+                limit,
+                cli.db.as_deref(),
+            )?;
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::history(&view));
+            } else {
+                println!("{}", hkjc::render::history(&view));
             }
         }
         Command::Results { date, venue, race } => {
@@ -284,6 +453,8 @@ async fn main() -> Result<()> {
             };
             if cli.json {
                 print_json(&result)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::results(&result));
             } else {
                 println!("{}", hkjc::render::race_result(&result));
             }
@@ -299,6 +470,8 @@ async fn main() -> Result<()> {
                 .collect::<Vec<_>>();
             if cli.json {
                 print_json(&draws)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::marksix(&draws));
             } else {
                 println!("{}", hkjc::render::marksix(&draws));
             }
@@ -329,6 +502,8 @@ async fn main() -> Result<()> {
             to,
             venue,
             all,
+            ics,
+            next,
         } => {
             let today = api::hong_kong_today();
             let (season_start, season_end) = api::season_bounds(today);
@@ -339,19 +514,143 @@ async fn main() -> Result<()> {
             } else {
                 from.unwrap_or(today)
             };
-            let to = to.unwrap_or_else(|| {
-                if all {
-                    season_end
-                } else {
-                    from.checked_add_days(Days::new(90)).unwrap_or(season_end)
-                }
-            });
+            let to = if next {
+                season_end
+            } else {
+                to.unwrap_or_else(|| {
+                    if all {
+                        season_end
+                    } else {
+                        from.checked_add_days(Days::new(90)).unwrap_or(season_end)
+                    }
+                })
+            };
             let fixtures = client.fixtures(from, to).await?;
-            let views = api::fixture_views(&fixtures, Some(from), Some(to), venue.as_deref());
-            if cli.json {
+            let mut views = api::fixture_views(&fixtures, Some(from), Some(to), venue.as_deref());
+            if next {
+                views.truncate(1);
+                if views.is_empty() {
+                    bail!("no further race meeting is published for this season");
+                }
+            }
+            if ics {
+                print!("{}", hkjc::render::fixtures_ics(&views));
+            } else if cli.json {
                 print_json(&views)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::fixtures(&views));
             } else {
                 println!("{}", hkjc::render::fixtures(&views));
+            }
+        }
+        Command::Standings {
+            kind,
+            season,
+            venue,
+        } => {
+            let view = client
+                .standings(kind.as_str(), season.as_deref(), venue.as_deref())
+                .await?;
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::standings(&view));
+            } else {
+                println!("{}", hkjc::render::standings(&view));
+            }
+        }
+        Command::Trials { date } => {
+            let date = match date {
+                Some(value) => api::parse_date(&value)?,
+                None => api::hong_kong_today(),
+            };
+            let view = client.trials(date).await?;
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::trials(&view));
+            } else {
+                println!("{}", hkjc::render::trials(&view));
+            }
+        }
+        Command::Sectionals { date, race } => {
+            let date = match date {
+                Some(value) => api::parse_date(&value)?,
+                None => api::hong_kong_today(),
+            };
+            let view = client.sectionals(date, race).await?;
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::sectionals(&view));
+            } else {
+                println!("{}", hkjc::render::sectionals(&view));
+            }
+        }
+        Command::Pace { date, race } => {
+            let date = match date {
+                Some(value) => api::parse_date(&value)?,
+                None => api::hong_kong_today(),
+            };
+            let view = client.sectionals(date, race).await?;
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::pace(&view));
+            } else {
+                println!("{}", hkjc::render::pace(&view));
+            }
+        }
+        Command::MarksixCheck { numbers, draw } => {
+            let ticket = api::parse_ticket(&numbers)?;
+            let draws = client
+                .mark_six(Some(draw.map_or(1, |_| 30)), None, None)
+                .await?;
+            let selected = match draw {
+                Some(selected) => {
+                    draws
+                        .iter()
+                        .find(|item| item.no == selected)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("draw {selected} is not in the recent results")
+                        })?
+                }
+                None => draws
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("no Mark Six draw is published"))?,
+            };
+            let view = api::check_mark_six(&ticket, &selected.view());
+            if cli.json {
+                print_json(&view)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::marksix_check(&view));
+            } else {
+                println!("{}", hkjc::render::marksix_check(&view));
+            }
+        }
+        Command::Doctor => {
+            let checks = client.health().await;
+            if cli.json {
+                print_json(&checks)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::health(&checks));
+            } else {
+                for check in &checks {
+                    println!(
+                        "{:<10} {:<5} {:>5} ms  {}",
+                        check.name,
+                        if check.ok { "ok" } else { "FAIL" },
+                        check.millis,
+                        if check.ok {
+                            String::new()
+                        } else {
+                            check.detail.lines().next().unwrap_or("").to_string()
+                        }
+                    );
+                }
+                if let Some(failed) = checks.iter().find(|check| !check.ok) {
+                    bail!("{} is unavailable: {}", failed.name, failed.detail);
+                }
             }
         }
         Command::Football {
@@ -370,6 +669,8 @@ async fn main() -> Result<()> {
             );
             if cli.json {
                 print_json(&views)?;
+            } else if cli.csv {
+                print!("{}", hkjc::csv::football(&views));
             } else {
                 println!("{}", hkjc::render::football(&views));
             }
@@ -399,6 +700,38 @@ async fn main() -> Result<()> {
             } else {
                 println!("{}", hkjc::render::lookup(&hits));
             }
+        }
+        Command::Watch {
+            date,
+            venue,
+            race,
+            interval,
+            count,
+            webhook,
+            telegram,
+            record,
+        } => {
+            let options = hkjc::watch::WatchOptions {
+                date: optional_date(date.as_ref())?,
+                venue,
+                race,
+                interval,
+                count,
+                webhook,
+                telegram,
+                record,
+                db: cli.db.clone(),
+            };
+            hkjc::watch::run(&client, options).await?;
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
+        }
+        Command::Man => {
+            let command = Cli::command();
+            clap_mangen::Man::new(command).render(&mut std::io::stdout())?;
         }
         Command::Update { check, force } => update::run(check, force)?,
         Command::Mcp => unreachable!(),

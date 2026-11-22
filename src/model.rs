@@ -625,6 +625,7 @@ pub struct RaceResultView {
     pub placings: Vec<PlacingView>,
     pub dividends: Vec<DividendView>,
     pub incidents: Vec<IncidentView>,
+    pub replays: Vec<ReplayView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -954,4 +955,211 @@ pub struct LookupHit {
     pub meeting: String,
     pub race_no: i64,
     pub horse: String,
+}
+
+// ---------------------------------------------------------------------------
+// Standings (jockey and trainer rankings)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandingsData {
+    #[serde(default)]
+    pub jockey_stat: Vec<RankStat>,
+    #[serde(default)]
+    pub trainer_stat: Vec<RankStat>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RankStat {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default, rename = "name_en")]
+    pub name_en: String,
+    #[serde(default, rename = "name_ch")]
+    pub name_ch: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub season: String,
+    #[serde(default, rename = "isCurSsn")]
+    pub is_cur_ssn: bool,
+    #[serde(default, rename = "ssnStat")]
+    pub ssn_stat: Vec<RankSplit>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RankSplit {
+    #[serde(default, rename = "numFirst")]
+    pub num_first: i64,
+    #[serde(default, rename = "numSecond")]
+    pub num_second: i64,
+    #[serde(default, rename = "numThird")]
+    pub num_third: i64,
+    #[serde(default, rename = "numFourth")]
+    pub num_fourth: i64,
+    #[serde(default, rename = "numFifth")]
+    pub num_fifth: i64,
+    #[serde(default, rename = "numStarts")]
+    pub num_starts: i64,
+    #[serde(default, rename = "stakeWon")]
+    pub stake_won: String,
+    #[serde(default)]
+    pub trk: String,
+    #[serde(default)]
+    pub ven: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StandingRowView {
+    pub rank: i64,
+    pub name: String,
+    pub name_zh: String,
+    pub id: String,
+    pub first: i64,
+    pub second: i64,
+    pub third: i64,
+    pub fourth: i64,
+    pub fifth: i64,
+    pub starts: i64,
+    pub stakes_won: String,
+    pub win_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StandingsView {
+    pub season: String,
+    pub kind: String,
+    pub venue: String,
+    pub rows: Vec<StandingRowView>,
+}
+
+// ---------------------------------------------------------------------------
+// Barrier trials
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialHorseView {
+    pub horse: String,
+    pub horse_id: String,
+    pub jockey: String,
+    pub trainer: String,
+    pub draw: String,
+    pub gear: String,
+    pub lengths_behind: String,
+    pub running_position: String,
+    pub time: String,
+    pub result: String,
+    pub comment: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialBatchView {
+    pub batch: String,
+    pub venue: String,
+    pub distance: String,
+    pub going: String,
+    pub time: String,
+    pub sectional_time: String,
+    pub horses: Vec<TrialHorseView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialsView {
+    pub date: String,
+    pub batches: Vec<TrialBatchView>,
+}
+
+// ---------------------------------------------------------------------------
+// Sectional times and pace
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionalSplitView {
+    pub position: Option<i64>,
+    pub margin: String,
+    pub time: String,
+    pub fractions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionalHorseView {
+    pub place: String,
+    pub horse_no: String,
+    pub horse: String,
+    pub splits: Vec<SectionalSplitView>,
+    pub finish_time: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionalsView {
+    pub date: String,
+    pub race_no: i64,
+    pub race_times: Vec<String>,
+    pub sectional_times: Vec<String>,
+    pub horses: Vec<SectionalHorseView>,
+}
+
+// ---------------------------------------------------------------------------
+// Replays attached to a race result
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayView {
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthCheck {
+    pub name: String,
+    pub url: String,
+    pub ok: bool,
+    pub detail: String,
+    pub millis: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MarkSixCheckView {
+    pub draw_date: String,
+    pub draw_no: i64,
+    pub ticket: Vec<u8>,
+    pub drawn: Vec<u8>,
+    pub extra: Option<u8>,
+    pub matches: Vec<u8>,
+    pub extra_matched: bool,
+    pub division: Option<i64>,
+    pub dividend: String,
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Local odds history
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryPoint {
+    pub captured_at: String,
+    pub odds: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryEntry {
+    pub pool: String,
+    pub combination: String,
+    pub first: String,
+    pub last: String,
+    pub movement: f64,
+    pub points: Vec<HistoryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryView {
+    pub meeting_date: String,
+    pub venue: String,
+    pub race_no: i64,
+    pub snapshots: usize,
+    pub entries: Vec<HistoryEntry>,
 }

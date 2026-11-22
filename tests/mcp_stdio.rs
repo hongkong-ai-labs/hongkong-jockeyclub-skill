@@ -121,8 +121,9 @@ fn cli_mcp_answers_tool_calls_without_panicking() {
     let list = server.receive();
     assert_eq!(list["id"], 2, "notifications must not produce a response");
     let tools = list["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 18);
     assert!(tools.iter().any(|tool| tool["name"] == "hk_race_meetings"));
+    assert!(tools.iter().any(|tool| tool["name"] == "hk_race_standings"));
 
     // Regression: this request used to panic inside the async runtime.
     server.send(&json!({

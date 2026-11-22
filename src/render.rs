@@ -458,6 +458,12 @@ pub fn race_result(result: &RaceResultView) -> String {
             .collect();
         out.push_str(table(&["POOL", "COMBINATION", "DIVIDEND"], &rows).trim_end());
     }
+    if !result.replays.is_empty() {
+        out.push_str("\n\nReplays\n");
+        for replay in &result.replays {
+            out.push_str(&format!("  {}: {}\n", replay.label, replay.url));
+        }
+    }
     if !result.incidents.is_empty() {
         out.push_str("\n\nIncidents\n");
         for incident in &result.incidents {
@@ -689,4 +695,313 @@ pub fn lookup(hits: &[LookupHit]) -> String {
     table(&["KIND", "NAME", "中文名", "ID", "RACE", "HORSE"], &rows)
         .trim_end()
         .to_string()
+}
+
+pub fn standings(view: &StandingsView) -> String {
+    if view.rows.is_empty() {
+        return format!(
+            "No {} standings are published for that selection.",
+            view.kind
+        );
+    }
+    let title = if view.kind.starts_with("jockey") {
+        "Jockeys' Ranking"
+    } else {
+        "Trainers' Ranking"
+    };
+    let course = if view.venue == "ALL" {
+        "all racecourses".to_string()
+    } else {
+        crate::api::venue_name(&view.venue)
+    };
+    let mut out = format!("{title} — {} ({course})\n\n", view.season);
+    let rows: Vec<Vec<String>> = view
+        .rows
+        .iter()
+        .map(|row| {
+            vec![
+                row.rank.to_string(),
+                row.name.clone(),
+                row.first.to_string(),
+                row.second.to_string(),
+                row.third.to_string(),
+                row.fourth.to_string(),
+                row.fifth.to_string(),
+                row.starts.to_string(),
+                format!("{:.1}%", row.win_rate),
+                money(&row.stakes_won),
+            ]
+        })
+        .collect();
+    out.push_str(
+        table(
+            &[
+                "#", "NAME", "1ST", "2ND", "3RD", "4TH", "5TH", "RUNS", "WIN%", "STAKES",
+            ],
+            &rows,
+        )
+        .trim_end(),
+    );
+    out
+}
+
+pub fn trials(view: &TrialsView) -> String {
+    if view.batches.is_empty() {
+        return format!("No barrier trials are published for {}.", view.date);
+    }
+    let mut out = format!("Barrier trials — {}\n", view.date);
+    for batch in &view.batches {
+        out.push_str(&format!(
+            "\n{} · {} · {}\n",
+            batch.batch, batch.venue, batch.distance
+        ));
+        let meta = [
+            (!batch.going.is_empty()).then(|| format!("Going: {}", batch.going)),
+            (!batch.time.is_empty()).then(|| format!("Time: {}", batch.time)),
+            (!batch.sectional_time.is_empty())
+                .then(|| format!("Sectionals: {}", batch.sectional_time)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+        if !meta.is_empty() {
+            out.push_str(&format!("{meta}\n"));
+        }
+        let rows: Vec<Vec<String>> = batch
+            .horses
+            .iter()
+            .map(|horse| {
+                vec![
+                    horse.horse.clone(),
+                    horse.jockey.clone(),
+                    horse.trainer.clone(),
+                    horse.draw.clone(),
+                    horse.lengths_behind.clone(),
+                    horse.running_position.clone(),
+                    horse.time.clone(),
+                    horse.result.clone(),
+                    truncate(&horse.comment, 64),
+                ]
+            })
+            .collect();
+        out.push_str(
+            table(
+                &[
+                    "HORSE", "JOCKEY", "TRAINER", "DRAW", "LBW", "RUN", "TIME", "RESULT", "COMMENT",
+                ],
+                &rows,
+            )
+            .trim_end(),
+        );
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+pub fn sectionals(view: &SectionalsView) -> String {
+    if view.horses.is_empty() {
+        return "No sectional times are published for that race.".to_string();
+    }
+    let sections = view
+        .horses
+        .iter()
+        .map(|horse| horse.splits.len())
+        .max()
+        .unwrap_or(0);
+    let mut out = format!("Sectional times — {} race {}\n", view.date, view.race_no);
+    if !view.race_times.is_empty() {
+        out.push_str(&format!("Race time: {}\n", view.race_times.join(" · ")));
+    }
+    if !view.sectional_times.is_empty() {
+        out.push_str(&format!(
+            "Sectionals: {}\n",
+            view.sectional_times.join(" · ")
+        ));
+    }
+    out.push('\n');
+    let mut headers = vec!["PL".to_string(), "NO".to_string(), "HORSE".to_string()];
+    headers.extend((1..=sections).map(|index| format!("S{index}")));
+    headers.push("TIME".to_string());
+    let rows: Vec<Vec<String>> = view
+        .horses
+        .iter()
+        .map(|horse| {
+            let mut row = vec![
+                horse.place.clone(),
+                horse.horse_no.clone(),
+                horse.horse.clone(),
+            ];
+            for index in 0..sections {
+                row.push(match horse.splits.get(index) {
+                    Some(split) => {
+                        let position = split
+                            .position
+                            .map(|value| value.to_string())
+                            .unwrap_or_default();
+                        if split.margin.is_empty() {
+                            position
+                        } else {
+                            format!("{position} {}", split.margin)
+                        }
+                    }
+                    None => String::new(),
+                });
+            }
+            row.push(horse.finish_time.clone());
+            row
+        })
+        .collect();
+    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    out.push_str(table(&header_refs, &rows).trim_end());
+    out
+}
+
+pub fn pace(view: &SectionalsView) -> String {
+    if view.horses.is_empty() {
+        return "No sectional times are published for that race.".to_string();
+    }
+    let sections = view
+        .horses
+        .iter()
+        .map(|horse| horse.splits.len())
+        .max()
+        .unwrap_or(0);
+    let mut out = format!("Pace map — {} race {}\n", view.date, view.race_no);
+    if !view.sectional_times.is_empty() {
+        out.push_str(&format!(
+            "Sectionals: {}\n",
+            view.sectional_times.join(" · ")
+        ));
+    }
+    out.push('\n');
+    let mut headers = vec!["PL".to_string(), "NO".to_string(), "HORSE".to_string()];
+    headers.extend((1..=sections).map(|index| format!("S{index}")));
+    headers.push("FIN".to_string());
+    let rows: Vec<Vec<String>> = view
+        .horses
+        .iter()
+        .map(|horse| {
+            let mut row = vec![
+                horse.place.clone(),
+                horse.horse_no.clone(),
+                horse.horse.clone(),
+            ];
+            for index in 0..sections {
+                row.push(
+                    horse
+                        .splits
+                        .get(index)
+                        .and_then(|split| split.position)
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                );
+            }
+            row.push(horse.finish_time.clone());
+            row
+        })
+        .collect();
+    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    out.push_str(table(&header_refs, &rows).trim_end());
+    out
+}
+
+pub fn marksix_check(view: &MarkSixCheckView) -> String {
+    let ticket = view
+        .ticket
+        .iter()
+        .map(|number| format!("{number:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let drawn = view
+        .drawn
+        .iter()
+        .map(|number| format!("{number:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let extra = view
+        .extra
+        .map(|number| format!("{number:02}"))
+        .unwrap_or_default();
+    let matches = view
+        .matches
+        .iter()
+        .map(|number| format!("{number:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = format!("Mark Six — {} draw {}\n\n", view.draw_date, view.draw_no);
+    out.push_str(&format!("Ticket    {ticket}\n"));
+    out.push_str(&format!("Drawn     {drawn}  + {extra}\n"));
+    out.push_str(&format!(
+        "Matched   {}{}\n",
+        if matches.is_empty() { "-" } else { &matches },
+        if view.extra_matched { " + extra" } else { "" }
+    ));
+    out.push_str(&format!("Result    {}", view.message));
+    if !view.dividend.is_empty() {
+        out.push_str(&format!(" ({} per unit)", money(&view.dividend)));
+    }
+    out
+}
+
+/// iCalendar feed for race meetings, suitable for `fixtures --ics > races.ics`.
+pub fn fixtures_ics(fixtures: &[FixtureView]) -> String {
+    let mut out = String::from(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//hongkong-jockeyclub-skill//HKJC fixtures//EN\r\nCALSCALE:GREGORIAN\r\n",
+    );
+    for fixture in fixtures {
+        let date = fixture.date.replace('-', "");
+        let summary = format!("HKJC races — {} ({})", fixture.venue, fixture.venue_code);
+        out.push_str("BEGIN:VEVENT\r\n");
+        out.push_str(&format!(
+            "UID:{}-{}@hongkong-jockeyclub-skill\r\n",
+            date, fixture.venue_code
+        ));
+        out.push_str(&format!("DTSTAMP:{date}T000000Z\r\n"));
+        out.push_str(&format!("DTSTART;VALUE=DATE:{date}\r\n"));
+        out.push_str(&format!("SUMMARY:{summary}\r\n"));
+        out.push_str(&format!("LOCATION:{}\r\n", fixture.venue));
+        out.push_str("END:VEVENT\r\n");
+    }
+    out.push_str("END:VCALENDAR\r\n");
+    out
+}
+
+pub fn history(view: &HistoryView) -> String {
+    if view.entries.is_empty() {
+        return format!(
+            "No odds history recorded for {} {} race {}.",
+            view.meeting_date, view.venue, view.race_no
+        );
+    }
+    let mut out = format!(
+        "Odds history — {} {} race {} ({} snapshot{})\n\n",
+        view.meeting_date,
+        view.venue,
+        view.race_no,
+        view.snapshots,
+        if view.snapshots == 1 { "" } else { "s" }
+    );
+    let rows: Vec<Vec<String>> = view
+        .entries
+        .iter()
+        .map(|entry| {
+            vec![
+                entry.pool.clone(),
+                entry.combination.clone(),
+                entry.first.clone(),
+                entry.last.clone(),
+                format!("{:+.2}", entry.movement),
+                entry.points.len().to_string(),
+            ]
+        })
+        .collect();
+    out.push_str(
+        table(
+            &["POOL", "COMBINATION", "FIRST", "LAST", "MOVE", "POINTS"],
+            &rows,
+        )
+        .trim_end(),
+    );
+    out
 }
