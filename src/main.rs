@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 use chrono::{Days, NaiveDate};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use hkjc::api::{self, Client};
 use hkjc::model::ProfileKind;
 
@@ -234,6 +234,41 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Poll a meeting and report odds moves and scratchings
+    Watch {
+        /// Meeting date, YYYY-MM-DD (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// Venue code: ST, HV or CH
+        #[arg(long, short)]
+        venue: Option<String>,
+        /// Only this race (default: every race on the card)
+        #[arg(long, short)]
+        race: Option<i64>,
+        /// Seconds between polls (minimum 5)
+        #[arg(long, default_value_t = 60)]
+        interval: u64,
+        /// Stop after this many polls (0 means until interrupted)
+        #[arg(long, default_value_t = 0)]
+        count: u32,
+        /// POST each change as JSON to this URL
+        #[arg(long)]
+        webhook: Option<String>,
+        /// Send changes to Telegram as BOT_TOKEN:CHAT_ID
+        #[arg(long)]
+        telegram: Option<String>,
+        /// Save every poll to the local history database
+        #[arg(long)]
+        record: bool,
+    },
+    /// Print a shell completion script
+    Completions {
+        /// Target shell
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the roff manual page
+    Man,
     /// Check HKJC endpoint health and latency
     Doctor,
     /// Run the MCP server over stdio
@@ -665,6 +700,38 @@ async fn main() -> Result<()> {
             } else {
                 println!("{}", hkjc::render::lookup(&hits));
             }
+        }
+        Command::Watch {
+            date,
+            venue,
+            race,
+            interval,
+            count,
+            webhook,
+            telegram,
+            record,
+        } => {
+            let options = hkjc::watch::WatchOptions {
+                date: optional_date(date.as_ref())?,
+                venue,
+                race,
+                interval,
+                count,
+                webhook,
+                telegram,
+                record,
+                db: cli.db.clone(),
+            };
+            hkjc::watch::run(&client, options).await?;
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
+        }
+        Command::Man => {
+            let command = Cli::command();
+            clap_mangen::Man::new(command).render(&mut std::io::stdout())?;
         }
         Command::Update { check, force } => update::run(check, force)?,
         Command::Mcp => unreachable!(),

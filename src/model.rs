@@ -990,7 +990,7 @@ pub struct RankStat {
     pub ssn_stat: Vec<RankSplit>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RankSplit {
     #[serde(default, rename = "numFirst")]
     pub num_first: i64,

@@ -60,12 +60,15 @@ hkjc sectionals --date 2026-11-18 --race 4
 hkjc pace --date 2026-11-18 --race 4
 hkjc odds --race 1 --record          # save an odds snapshot for history
 hkjc history --date 2026-11-18 --venue HV --race 4
+hkjc watch --race 1 --interval 60    # poll odds and scratchings
 hkjc marksix-check 1,2,3,4,5,6
 hkjc doctor
 hkjc fixtures
 hkjc fixtures --all
 hkjc fixtures --next
 hkjc fixtures --ics > races.ics
+hkjc completions zsh > _hkjc      # bash, zsh, fish, elvish, powershell
+hkjc man > hkjc.1                 # roff manual page
 hkjc lookup Purton
 hkjc profile jockey PZ
 hkjc profile horse HK_2024_K392
@@ -79,7 +82,18 @@ hkjc mcp
 hkjc update --check
 ```
 
-Add `--json` for structured output.
+Add `--json` for structured output, or `--csv` for RFC 4180 rows that open
+directly in a spreadsheet. `--csv` and `--json` are mutually exclusive.
+
+`watch` polls the live card and reports odds moves and scratchings. Add
+`--record` to store each poll, `--webhook URL` to POST changes as JSON, or
+`--telegram BOT_TOKEN:CHAT_ID` to send them to Telegram. `--count` stops
+after a fixed number of polls. Live responses are cached briefly, so polls
+run at five-second intervals or slower.
+
+Odds history is stored in SQLite at `$HKJC_DB`, else
+`$XDG_DATA_HOME/hkjc/history.sqlite`, else
+`~/.local/share/hkjc/history.sqlite`. Pass `--db PATH` to use another file.
 
 ## MCP
 
@@ -120,13 +134,14 @@ Tools: `hk_race_meetings`, `hk_race_card`, `hk_race_odds`, `hk_race_results`,
 - `https://racing.hkjc.com/racing/information/English/Racing/Fixture.aspx`
   — the season fixture calendar.
 - `https://racing.hkjc.com/en-us/local/information/` — jockey, trainer and horse
-  profiles.
+  profiles, jockey and trainer rankings, barrier trials and sectional times.
 
 `meetings` covers only the meeting HKJC currently publishes; `fixtures` covers
-the season, including future meetings. Historical results need an actual race
-day. Mark Six history is a capped recent window, and an explicit date range must
-span about three months or less. Odds, declarations and results change; check
-HKJC for confirmation.
+the season, including future meetings. Historical results, barrier trials and
+sectional times need an actual race or trial day. Mark Six history is a capped
+recent window, and an explicit date range must span about three months or less.
+Standings default to the current season; pass `--season 25/26` for a previous
+one. Odds, declarations and results change; check HKJC for confirmation.
 
 ## Run modes and deployment
 
@@ -134,6 +149,8 @@ HKJC for confirmation.
 | --- | --- | --- |
 | CLI | `hkjc <command>` | Interactive use and shell scripts |
 | JSON | `<command>` with `--json` | `jq`, automation, other programs |
+| CSV | `<command>` with `--csv` | Spreadsheets and data pipelines |
+| Watch | `hkjc watch` | Odds moves, scratchings and webhook alerts |
 | MCP stdio | `hkjc mcp` | Desktop and CLI MCP clients |
 | Container | `docker run --rm -i hkjc mcp` | No local Rust toolchain |
 

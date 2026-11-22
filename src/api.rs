@@ -105,6 +105,11 @@ impl Client {
         })
     }
 
+    /// Drop every cached response, so the next call fetches fresh data.
+    pub fn clear_cache(&self) {
+        self.cache.lock().expect("cache poisoned").clear();
+    }
+
     async fn cached_text(&self, url: &str, ttl: Duration) -> Result<String> {
         if let Some((at, body)) = self.cache.lock().expect("cache poisoned").get(url).cloned()
             && at.elapsed() < ttl
@@ -2565,5 +2570,108 @@ mod tests {
         assert_eq!(fixtures[0].venue_code, "HV");
         assert_eq!(fixtures[1].date, "2026-12-25");
         assert_eq!(fixtures[1].venue_code, "ST");
+    }
+
+    #[test]
+    fn parses_trial_batches_and_horses() {
+        let html = r#"<table><tr><td>Batch 1 - CONGHUA TURF - 1000m</td></tr>
+          <tr><td>Going: GOOD</td><td>Time: 0.57.67</td></tr>
+          <tr><td>Sectional Time: 13.5 21.4 22.7</td></tr></table>
+        <table>
+          <tr><th>Horse</th><th>Jockey</th><th>Trainer</th><th>Draw</th><th>Gear</th>
+              <th>LBW</th><th>Running Position</th><th>Time</th><th>Result</th><th>Comment</th></tr>
+          <tr><td>SOLID STATE (L411)</td><td>A Badel</td><td>F C Lor</td><td>08</td><td></td>
+              <td></td><td>4 3 1</td><td>0.57.67</td><td>Passed</td><td>Hit the front late.</td></tr>
+        </table>"#;
+        let view = parse_trials_page(html, NaiveDate::from_ymd_opt(2026, 8, 31).unwrap()).unwrap();
+        assert_eq!(view.batches.len(), 1);
+        let batch = &view.batches[0];
+        assert_eq!(batch.batch, "Batch 1");
+        assert_eq!(batch.venue, "CONGHUA TURF");
+        assert_eq!(batch.distance, "1000m");
+        assert_eq!(batch.going, "GOOD");
+        assert_eq!(batch.horses.len(), 1);
+        assert_eq!(batch.horses[0].horse, "SOLID STATE");
+        assert_eq!(batch.horses[0].horse_id, "L411");
+        assert_eq!(batch.horses[0].result, "Passed");
+    }
+
+    #[test]
+    fn parses_sectional_positions_and_split_fractions() {
+        let html = r#"<table><tr><td>Race Time:</td><td>(28.33)</td><td>(51.43)</td></tr>
+          <tr><td>Sectional Time:</td><td>28.33</td><td>23.10</td></tr></table>
+        <table>
+          <tr><th>Finishing Order</th><th>Horse No.</th><th>Horse</th><th>Running Position</th><th>Time</th></tr>
+          <tr><td>Sectional Time</td></tr>
+          <tr><td>1st Sec.</td><td>2nd Sec.</td></tr>
+          <tr><td>2</td><td>12</td><td>RED BRICK WARRIOR (K580)</td>
+              <td>1 1 28.33</td><td>1 3/4 23.10 12.04 11.93</td><td>1:40.34</td></tr>
+        </table>"#;
+        let view = parse_sectionals_page(html, 4).unwrap();
+        assert_eq!(view.race_times, ["28.33", "51.43"]);
+        assert_eq!(view.horses.len(), 1);
+        let horse = &view.horses[0];
+        assert_eq!(horse.horse_no, "12");
+        assert_eq!(horse.finish_time, "1:40.34");
+        assert_eq!(horse.splits[0].position, Some(1));
+        assert_eq!(horse.splits[0].time, "28.33");
+        assert_eq!(horse.splits[1].margin, "3/4");
+        assert_eq!(horse.splits[1].fractions, ["12.04", "11.93"]);
+    }
+
+    #[test]
+    fn standings_sum_the_aggregate_not_every_venue() {
+        let stat = RankStat {
+            code: "PZ".to_string(),
+            name_en: "Z Purton".to_string(),
+            name_ch: "潘頓".to_string(),
+            status: "Active".to_string(),
+            id: "PZ".to_string(),
+            season: "26/27".to_string(),
+            is_cur_ssn: true,
+            ssn_stat: vec![
+                RankSplit {
+                    num_first: 34,
+                    num_starts: 157,
+                    stake_won: "42833525".to_string(),
+                    trk: "ALL".to_string(),
+                    ven: "ALL".to_string(),
+                    ..Default::default()
+                },
+                RankSplit {
+                    num_first: 8,
+                    num_starts: 30,
+                    stake_won: "8080625".to_string(),
+                    trk: "TURF".to_string(),
+                    ven: "HV".to_string(),
+                    ..Default::default()
+                },
+            ],
+        };
+        let view = standings_view("jockey", vec![stat.clone()], None);
+        assert_eq!(view.rows[0].first, 34);
+        assert_eq!(view.rows[0].starts, 157);
+        let at_hv = standings_view("jockey", vec![stat], Some("HV"));
+        assert_eq!(at_hv.rows[0].first, 8);
+        assert_eq!(at_hv.rows[0].starts, 30);
+    }
+
+    #[test]
+    fn extracts_replay_links_from_results() {
+        let html = r#"<p class="f_fs13 icon_link">
+          <a href="/contentAsset/videoplayer_v4/video-player-iframe_v4.html?type=replay-full&amp;date=20261118">
+            Multi Angle Race Replay</a>
+          <a href="/contentAsset/videoplayer_v4/video-player-iframe_v4.html?type=replay-aerial&amp;date=20261118"></a>
+        </p>"#;
+        let document = Html::parse_document(html);
+        let replays = extract_replays(&document);
+        assert_eq!(replays.len(), 2);
+        assert_eq!(replays[0].label, "Multi Angle Race Replay");
+        assert_eq!(replays[1].label, "Aerial Virtual Replay");
+        assert!(
+            replays[0]
+                .url
+                .starts_with("https://racing.hkjc.com/contentAsset/")
+        );
     }
 }
