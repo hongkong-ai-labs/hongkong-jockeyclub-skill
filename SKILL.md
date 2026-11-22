@@ -64,6 +64,18 @@ claude mcp add hongkong-jockeyclub -- hkjc mcp
 codex mcp add hongkong-jockeyclub -- hkjc mcp
 ```
 
+For a remote client that cannot launch a process, serve streamable HTTP instead:
+
+```bash
+$BIN mcp --http                       # http://127.0.0.1:8765/mcp
+$BIN mcp --http 0.0.0.0:8765 --token "$HKJC_MCP_TOKEN"
+```
+
+`POST /mcp` carries one JSON-RPC request. Non-loopback binds require a bearer
+token (`--token` or `HKJC_MCP_TOKEN`); requests send
+`Authorization: Bearer <token>`. `GET` is not supported, and the endpoint is
+stateless.
+
 `add-mcp` detects the client configuration files in the current project; add
 `-g` for a global install. `$(command -v hkjc)` keeps the entry correct
 when the binary is on `PATH`; substitute an absolute path if your client does
@@ -74,6 +86,7 @@ not inherit the shell `PATH`.
 ```bash
 $BIN meetings                         # current meeting(s), races and post times
 $BIN meetings --venue ST
+$BIN --lang zh meetings               # Traditional Chinese output
 $BIN card --race 7                    # runners for race 7
 $BIN card --race 1 --json
 $BIN odds --race 1 --types WIN,PLA,QIN
@@ -111,7 +124,11 @@ $BIN update --check
 ```
 
 Add `--json` to any command for structured output, or `--csv` for spreadsheet
-rows. Odds history from `odds --record` and `watch --record` lives in SQLite at
+rows. `--lang zh` (also `zh-Hant` or `zh-HK`) translates the human-readable
+tables and messages to Traditional Chinese and uses Chinese names where HKJC
+publishes them; JSON and CSV keep stable English keys.
+
+Odds history from `odds --record` and `watch --record` lives in SQLite at
 `$HKJC_DB`, else `$XDG_DATA_HOME/hkjc/history.sqlite`, else
 `~/.local/share/hkjc/history.sqlite`; override with `--db PATH`.
 
@@ -135,7 +152,8 @@ source checkout or Homebrew, and updates with that same method.
 | `no`, `horse_no` | Race card number |
 | `horse`, `horse_zh` | English and Chinese horse name |
 | `horse_id` | HKJC horse id |
-| `jockey`, `trainer` | Names as declared |
+| `jockey`, `jockey_zh` | English and Chinese jockey name |
+| `trainer`, `trainer_zh` | English and Chinese trainer name |
 | `draw` | Barrier draw |
 | `weight` | Handicap weight |
 | `rating` | Current rating |
@@ -221,7 +239,10 @@ Tools:
   explicit `--from`/`--to` range must span about three months or less.
 - With `--to` but no `--from`, the tool looks back 90 days.
 - Football coverage follows HKJC's own list. Kick-off times are Hong Kong time,
-  and in-play odds change or close during a match.
+  and in-play odds change or close during a match. HKJC publishes match lists
+  and odds, not league tables; do not invent standings.
+- The HTTP MCP transport is opt-in. It is stateless, rejects non-local browser
+  origins, and requires a bearer token when bound beyond loopback.
 - This tool does not place bets, hold tickets or check account balances.
 - Not an official HKJC channel. Check the HKJC website or a betting branch for
   confirmation.

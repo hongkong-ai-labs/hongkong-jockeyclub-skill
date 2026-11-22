@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use chrono::{Days, NaiveDate};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use hkjc::api::{self, Client};
+use hkjc::lang::Language;
 use hkjc::model::ProfileKind;
 
 mod update;
@@ -27,6 +28,10 @@ struct Cli {
     /// Local history database (default: XDG data directory)
     #[arg(long, global = true, value_name = "PATH")]
     db: Option<std::path::PathBuf>,
+
+    /// Human-readable output language: en or zh (Traditional Chinese)
+    #[arg(long, global = true, default_value = "en", value_name = "LANG")]
+    lang: Language,
 
     #[command(subcommand)]
     command: Command,
@@ -271,8 +276,20 @@ enum Command {
     Man,
     /// Check HKJC endpoint health and latency
     Doctor,
-    /// Run the MCP server over stdio
-    Mcp,
+    /// Run the MCP server over stdio, or HTTP with --http
+    Mcp {
+        /// Serve streamable HTTP at this address instead of stdio
+        #[arg(
+            long,
+            value_name = "ADDR",
+            num_args = 0..=1,
+            default_missing_value = "127.0.0.1:8765"
+        )]
+        http: Option<String>,
+        /// Bearer token required by the HTTP transport
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -331,8 +348,17 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = Client::new()?;
 
-    if let Command::Mcp = cli.command {
-        return hkjc::mcp::serve(client).await;
+    if let Command::Mcp { http, token } = &cli.command {
+        return match http {
+            Some(address) => {
+                let token = token
+                    .clone()
+                    .or_else(|| std::env::var("HKJC_MCP_TOKEN").ok())
+                    .filter(|value| !value.is_empty());
+                hkjc::mcp::serve_http(client, address, token).await
+            }
+            None => hkjc::mcp::serve(client).await,
+        };
     }
 
     match cli.command {
@@ -345,7 +371,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::meetings(&views));
             } else {
-                println!("{}", hkjc::render::meetings(&views));
+                println!("{}", hkjc::render::meetings(&views, cli.lang));
             }
         }
         Command::Card { race, date, venue } => {
@@ -366,7 +392,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::card(&card));
             } else {
-                println!("{}", hkjc::render::race_card(&card));
+                println!("{}", hkjc::render::race_card(&card, cli.lang));
             }
         }
         Command::Odds {
@@ -406,7 +432,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::odds(&view));
             } else {
-                println!("{}", hkjc::render::odds(&view));
+                println!("{}", hkjc::render::odds(&view, cli.lang));
             }
         }
         Command::History {
@@ -433,7 +459,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::history(&view));
             } else {
-                println!("{}", hkjc::render::history(&view));
+                println!("{}", hkjc::render::history(&view, cli.lang));
             }
         }
         Command::Results { date, venue, race } => {
@@ -456,7 +482,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::results(&result));
             } else {
-                println!("{}", hkjc::render::race_result(&result));
+                println!("{}", hkjc::render::race_result(&result, cli.lang));
             }
         }
         Command::Marksix { draws, from, to } => {
@@ -473,7 +499,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::marksix(&draws));
             } else {
-                println!("{}", hkjc::render::marksix(&draws));
+                println!("{}", hkjc::render::marksix(&draws, cli.lang));
             }
         }
         Command::MarksixLatest => {
@@ -485,7 +511,7 @@ async fn main() -> Result<()> {
             if cli.json {
                 print_json(&draw)?;
             } else {
-                println!("{}", hkjc::render::marksix_draw(&draw));
+                println!("{}", hkjc::render::marksix_draw(&draw, cli.lang));
             }
         }
         Command::MarksixStats { draws } => {
@@ -494,7 +520,7 @@ async fn main() -> Result<()> {
             if cli.json {
                 print_json(&stats)?;
             } else {
-                println!("{}", hkjc::render::marksix_stats(&stats));
+                println!("{}", hkjc::render::marksix_stats(&stats, cli.lang));
             }
         }
         Command::Fixtures {
@@ -534,13 +560,13 @@ async fn main() -> Result<()> {
                 }
             }
             if ics {
-                print!("{}", hkjc::render::fixtures_ics(&views));
+                print!("{}", hkjc::render::fixtures_ics(&views, cli.lang));
             } else if cli.json {
                 print_json(&views)?;
             } else if cli.csv {
                 print!("{}", hkjc::csv::fixtures(&views));
             } else {
-                println!("{}", hkjc::render::fixtures(&views));
+                println!("{}", hkjc::render::fixtures(&views, cli.lang));
             }
         }
         Command::Standings {
@@ -556,7 +582,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::standings(&view));
             } else {
-                println!("{}", hkjc::render::standings(&view));
+                println!("{}", hkjc::render::standings(&view, cli.lang));
             }
         }
         Command::Trials { date } => {
@@ -570,7 +596,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::trials(&view));
             } else {
-                println!("{}", hkjc::render::trials(&view));
+                println!("{}", hkjc::render::trials(&view, cli.lang));
             }
         }
         Command::Sectionals { date, race } => {
@@ -584,7 +610,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::sectionals(&view));
             } else {
-                println!("{}", hkjc::render::sectionals(&view));
+                println!("{}", hkjc::render::sectionals(&view, cli.lang));
             }
         }
         Command::Pace { date, race } => {
@@ -598,7 +624,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::pace(&view));
             } else {
-                println!("{}", hkjc::render::pace(&view));
+                println!("{}", hkjc::render::pace(&view, cli.lang));
             }
         }
         Command::MarksixCheck { numbers, draw } => {
@@ -625,7 +651,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::marksix_check(&view));
             } else {
-                println!("{}", hkjc::render::marksix_check(&view));
+                println!("{}", hkjc::render::marksix_check(&view, cli.lang));
             }
         }
         Command::Doctor => {
@@ -672,7 +698,7 @@ async fn main() -> Result<()> {
             } else if cli.csv {
                 print!("{}", hkjc::csv::football(&views));
             } else {
-                println!("{}", hkjc::render::football(&views));
+                println!("{}", hkjc::render::football(&views, cli.lang));
             }
         }
         Command::FootballMatch { id, types } => {
@@ -682,7 +708,7 @@ async fn main() -> Result<()> {
             if cli.json {
                 print_json(&view)?;
             } else {
-                println!("{}", hkjc::render::football_match(&view));
+                println!("{}", hkjc::render::football_match(&view, cli.lang));
             }
         }
         Command::Profile { kind, id } => {
@@ -690,7 +716,7 @@ async fn main() -> Result<()> {
             if cli.json {
                 print_json(&view)?;
             } else {
-                println!("{}", hkjc::render::profile(&view));
+                println!("{}", hkjc::render::profile(&view, cli.lang));
             }
         }
         Command::Lookup { query } => {
@@ -698,7 +724,7 @@ async fn main() -> Result<()> {
             if cli.json {
                 print_json(&hits)?;
             } else {
-                println!("{}", hkjc::render::lookup(&hits));
+                println!("{}", hkjc::render::lookup(&hits, cli.lang));
             }
         }
         Command::Watch {
@@ -721,6 +747,7 @@ async fn main() -> Result<()> {
                 telegram,
                 record,
                 db: cli.db.clone(),
+                language: cli.lang,
             };
             hkjc::watch::run(&client, options).await?;
         }
@@ -734,7 +761,7 @@ async fn main() -> Result<()> {
             clap_mangen::Man::new(command).render(&mut std::io::stdout())?;
         }
         Command::Update { check, force } => update::run(check, force)?,
-        Command::Mcp => unreachable!(),
+        Command::Mcp { .. } => unreachable!(),
     }
     Ok(())
 }

@@ -577,8 +577,11 @@ impl Client {
                 kick_off: String::new(),
                 status: String::new(),
                 tournament: String::new(),
+                tournament_zh: String::new(),
                 home: String::new(),
+                home_zh: String::new(),
                 away: String::new(),
+                away_zh: String::new(),
                 home_score: String::new(),
                 away_score: String::new(),
                 venue: String::new(),
@@ -883,15 +886,30 @@ impl FootballMatch {
                 .as_ref()
                 .map(|tournament| tournament.name_en.clone())
                 .unwrap_or_default(),
+            tournament_zh: self
+                .tournament
+                .as_ref()
+                .map(|tournament| tournament.name_ch.clone())
+                .unwrap_or_default(),
             home: self
                 .home_team
                 .as_ref()
                 .map(|team| team.name_en.clone())
                 .unwrap_or_default(),
+            home_zh: self
+                .home_team
+                .as_ref()
+                .map(|team| team.name_ch.clone())
+                .unwrap_or_default(),
             away: self
                 .away_team
                 .as_ref()
                 .map(|team| team.name_en.clone())
+                .unwrap_or_default(),
+            away_zh: self
+                .away_team
+                .as_ref()
+                .map(|team| team.name_ch.clone())
                 .unwrap_or_default(),
             home_score: score
                 .map(|score| text(&score.home_score))
@@ -1169,6 +1187,11 @@ impl Runner {
                 .as_ref()
                 .map(|person| person.name_en.clone())
                 .unwrap_or_default(),
+            jockey_zh: self
+                .jockey
+                .as_ref()
+                .map(|person| person.name_ch.clone())
+                .unwrap_or_default(),
             jockey_code: self
                 .jockey
                 .as_ref()
@@ -1178,6 +1201,11 @@ impl Runner {
                 .trainer
                 .as_ref()
                 .map(|person| person.name_en.clone())
+                .unwrap_or_default(),
+            trainer_zh: self
+                .trainer
+                .as_ref()
+                .map(|person| person.name_ch.clone())
                 .unwrap_or_default(),
             trainer_code: self
                 .trainer

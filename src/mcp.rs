@@ -1,11 +1,21 @@
-//! MCP over stdio for Hong Kong Jockey Club racing and Mark Six.
+//! MCP for Hong Kong Jockey Club racing and Mark Six.
+//!
+//! The server speaks JSON-RPC over stdio, or streamable HTTP via
+//! [`serve_http`]. The HTTP transport is stateless: every POST is a complete
+//! request and the response is a JSON document.
 
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use crate::api::{self, Client};
+
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 const SUPPORTED_VERSIONS: [&str; 2] = ["2025-06-18", "2024-11-05"];
@@ -44,6 +54,376 @@ pub fn serve_blocking(client: Client) -> Result<()> {
         .enable_all()
         .build()?
         .block_on(serve(client))
+}
+
+/// Serve MCP's streamable HTTP transport.
+///
+/// `POST /mcp` accepts one JSON-RPC request and returns one JSON response.
+/// Notifications get `202 Accepted`. `GET` is not supported because this
+/// server has no server-initiated stream. A bearer token can be required with
+/// `token`; a non-loopback bind refuses to start without one.
+pub async fn serve_http(client: Client, address: &str, token: Option<String>) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .with_context(|| format!("binding MCP HTTP server to {address}"))?;
+    let local = listener.local_addr()?;
+    if !local.ip().is_loopback() && token.is_none() {
+        bail!("refusing to expose the MCP server on {local} without --token (or HKJC_MCP_TOKEN)");
+    }
+    eprintln!("hkjc MCP server listening on http://{local}/mcp");
+    let client = Arc::new(client);
+    let token = Arc::new(token);
+    loop {
+        let (stream, peer) = listener
+            .accept()
+            .await
+            .with_context(|| "accepting an MCP HTTP connection")?;
+        let client = Arc::clone(&client);
+        let token = Arc::clone(&token);
+        tokio::spawn(async move {
+            if let Err(error) = handle_http(&client, stream, token.as_deref()).await {
+                eprintln!("hkjc MCP HTTP {peer}: {error:#}");
+            }
+        });
+    }
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpRequest {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+async fn handle_http(client: &Client, mut stream: TcpStream, token: Option<&str>) -> Result<()> {
+    let request = match read_http_request(&mut stream).await {
+        Ok(request) => request,
+        Err(error) => {
+            respond(
+                &mut stream,
+                400,
+                "Bad Request",
+                "text/plain; charset=utf-8",
+                error.to_string().as_bytes(),
+                &[],
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let origin = request.header("origin").unwrap_or_default().to_string();
+    if !origin.is_empty() && !allowed_origin(&origin) {
+        respond(
+            &mut stream,
+            403,
+            "Forbidden",
+            "text/plain; charset=utf-8",
+            b"origin is not allowed\n",
+            &[],
+        )
+        .await?;
+        return Ok(());
+    }
+    let cors: Vec<(&str, &str)> = if origin.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            ("Access-Control-Allow-Origin", origin.as_str()),
+            ("Vary", "Origin"),
+            (
+                "Access-Control-Allow-Headers",
+                "authorization, content-type, mcp-protocol-version",
+            ),
+        ]
+    };
+
+    if request.method == "OPTIONS" {
+        let mut headers = cors.clone();
+        headers.push(("Access-Control-Allow-Methods", "POST, OPTIONS"));
+        respond(
+            &mut stream,
+            204,
+            "No Content",
+            "text/plain; charset=utf-8",
+            b"",
+            &headers,
+        )
+        .await?;
+        return Ok(());
+    }
+    if request.method != "POST" {
+        let mut headers = cors.clone();
+        headers.push(("Allow", "POST, OPTIONS"));
+        respond(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            "text/plain; charset=utf-8",
+            b"use POST /mcp for JSON-RPC\n",
+            &headers,
+        )
+        .await?;
+        return Ok(());
+    }
+    if request.path != "/mcp" && request.path != "/" {
+        respond(
+            &mut stream,
+            404,
+            "Not Found",
+            "text/plain; charset=utf-8",
+            b"MCP is served at /mcp\n",
+            &cors,
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(token) = token
+        && !bearer_matches(request.header("authorization"), token)
+    {
+        let mut headers = cors.clone();
+        headers.push(("WWW-Authenticate", "Bearer"));
+        respond(
+            &mut stream,
+            401,
+            "Unauthorized",
+            "text/plain; charset=utf-8",
+            b"a valid bearer token is required\n",
+            &headers,
+        )
+        .await?;
+        return Ok(());
+    }
+    if !request
+        .header("content-type")
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+    {
+        respond(
+            &mut stream,
+            415,
+            "Unsupported Media Type",
+            "text/plain; charset=utf-8",
+            b"content-type must be application/json\n",
+            &cors,
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(version) = request.header("mcp-protocol-version")
+        && !SUPPORTED_VERSIONS.contains(&version)
+    {
+        respond(
+            &mut stream,
+            400,
+            "Bad Request",
+            "text/plain; charset=utf-8",
+            format!("unsupported MCP protocol version {version:?}\n").as_bytes(),
+            &cors,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let message: Value = match serde_json::from_slice(&request.body) {
+        Ok(message) => message,
+        Err(error) => {
+            let body = error_response(None, -32700, &format!("parse error: {error}"));
+            let body = serde_json::to_vec(&body)?;
+            respond(&mut stream, 200, "OK", "application/json", &body, &cors).await?;
+            return Ok(());
+        }
+    };
+    if message.is_array() {
+        let body = error_response(
+            None,
+            -32600,
+            "invalid request: JSON-RPC batches are not supported",
+        );
+        let body = serde_json::to_vec(&body)?;
+        respond(&mut stream, 200, "OK", "application/json", &body, &cors).await?;
+        return Ok(());
+    }
+
+    match dispatch(client, &message).await {
+        Some(response) => {
+            let body = serde_json::to_vec(&response)?;
+            respond(&mut stream, 200, "OK", "application/json", &body, &cors).await?;
+        }
+        None => {
+            respond(
+                &mut stream,
+                202,
+                "Accepted",
+                "text/plain; charset=utf-8",
+                b"",
+                &cors,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        if let Some(index) = find_bytes(&buffer, b"\r\n\r\n") {
+            break index + 4;
+        }
+        if buffer.len() >= MAX_HEADER_BYTES {
+            bail!("request headers are too large");
+        }
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .context("reading request headers")?;
+        if read == 0 {
+            bail!("connection closed before the request headers");
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    };
+
+    let head =
+        std::str::from_utf8(&buffer[..header_end]).context("request headers are not UTF-8")?;
+    let mut lines = head.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing request line"))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing request method"))?
+        .to_string();
+    let target = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing request target"))?;
+    let path = target.split('?').next().unwrap_or(target).to_string();
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("malformed request header"))?;
+        headers.push((name.trim().to_string(), value.trim().to_string()));
+    }
+
+    let length = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.parse::<usize>())
+        .transpose()
+        .context("invalid content-length")?
+        .unwrap_or(0);
+    if length > MAX_BODY_BYTES {
+        bail!("request body is too large");
+    }
+    let mut body = buffer[header_end..].to_vec();
+    if body.len() > MAX_BODY_BYTES {
+        bail!("request body is too large");
+    }
+    while body.len() < length {
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .context("reading request body")?;
+        if read == 0 {
+            bail!("connection closed before the request body was complete");
+        }
+        body.extend_from_slice(&chunk[..read]);
+        if body.len() > MAX_BODY_BYTES {
+            bail!("request body is too large");
+        }
+    }
+    body.truncate(length);
+
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn bearer_matches(header: Option<&str>, token: &str) -> bool {
+    let Some((scheme, value)) = header.and_then(|value| value.split_once(' ')) else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return false;
+    }
+    let provided = value.trim().as_bytes();
+    let expected = token.as_bytes();
+    if provided.len() != expected.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in provided.iter().zip(expected) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+fn allowed_origin(origin: &str) -> bool {
+    let Some((_, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    let authority = authority.split('/').next().unwrap_or(authority);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+async fn respond(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+) -> Result<()> {
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .context("writing response headers")?;
+    stream
+        .write_all(body)
+        .await
+        .context("writing response body")?;
+    stream.flush().await.context("flushing response")?;
+    Ok(())
 }
 
 async fn dispatch(client: &Client, request: &Value) -> Option<Value> {

@@ -8,6 +8,7 @@ use chrono::NaiveDate;
 
 use crate::api::{self, Client};
 use crate::history;
+use crate::lang::Language;
 
 #[derive(Debug, Clone)]
 pub struct WatchOptions {
@@ -20,6 +21,7 @@ pub struct WatchOptions {
     pub telegram: Option<String>,
     pub record: bool,
     pub db: Option<PathBuf>,
+    pub language: Language,
 }
 
 struct RaceState {
@@ -27,9 +29,9 @@ struct RaceState {
     odds: BTreeMap<String, String>,
 }
 
-fn change_line(changes: &[String]) -> String {
+fn change_line(changes: &[String], language: Language) -> String {
     if changes.is_empty() {
-        "no changes".to_string()
+        language.t("no changes", "沒有變動").to_string()
     } else {
         changes.join("\n")
     }
@@ -96,12 +98,21 @@ pub async fn run(client: &Client, options: WatchOptions) -> Result<()> {
                 meeting.races.len()
             );
         }
-        let mut message = format!(
-            "HKJC {} {} — {} race(s)\n",
-            meeting.date,
-            venue_code,
-            races.len()
-        );
+        let mut message = if options.language.is_zh() {
+            format!(
+                "HKJC {} {} — {} 場賽事\n",
+                meeting.date,
+                venue_code,
+                races.len()
+            )
+        } else {
+            format!(
+                "HKJC {} {} — {} race(s)\n",
+                meeting.date,
+                venue_code,
+                races.len()
+            )
+        };
         let mut changes = Vec::new();
         for race_no in races {
             let card = meeting
@@ -135,16 +146,28 @@ pub async fn run(client: &Client, options: WatchOptions) -> Result<()> {
             }
             if let Some(state) = previous.get(&race_no) {
                 for runner in state.runners.difference(&runners) {
-                    changes.push(format!("race {race_no}: #{runner:02} scratched"));
+                    changes.push(if options.language.is_zh() {
+                        format!("第 {race_no} 場：#{runner:02} 退出")
+                    } else {
+                        format!("race {race_no}: #{runner:02} scratched")
+                    });
                 }
                 for runner in runners.difference(&state.runners) {
-                    changes.push(format!("race {race_no}: #{runner:02} added"));
+                    changes.push(if options.language.is_zh() {
+                        format!("第 {race_no} 場：#{runner:02} 加入")
+                    } else {
+                        format!("race {race_no}: #{runner:02} added")
+                    });
                 }
                 for (combination, odds) in &current {
                     if let Some(before) = state.odds.get(combination)
                         && before != odds
                     {
-                        changes.push(format!("race {race_no}: {combination} {before} -> {odds}"));
+                        changes.push(if options.language.is_zh() {
+                            format!("第 {race_no} 場：{combination} {before} -> {odds}")
+                        } else {
+                            format!("race {race_no}: {combination} {before} -> {odds}")
+                        });
                     }
                 }
             }
@@ -157,9 +180,12 @@ pub async fn run(client: &Client, options: WatchOptions) -> Result<()> {
             );
         }
         if poll == 0 {
-            message.push_str("watching for odds moves and scratchings\n");
+            message.push_str(options.language.t(
+                "watching for odds moves and scratchings\n",
+                "正在監察賠率變動及退出馬匹\n",
+            ));
         }
-        message.push_str(&change_line(&changes));
+        message.push_str(&change_line(&changes, options.language));
         println!("{message}");
         if poll == 0 || !changes.is_empty() {
             notify(&options, &message).await?;
