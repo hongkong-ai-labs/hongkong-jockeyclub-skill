@@ -545,3 +545,78 @@ pub const FOOTBALL_ODDS: &str = r######"
       }
     }
     "######;
+
+/// Jockey championship standings, verbatim from the jockey-ranking page.
+pub const JOCKEY_STANDINGS: &str = r#####"
+query rw_GetJockeyRanking($season: String) {
+  jockeyStat(season: $season) {
+    code
+    name_ch
+    name_en
+    status
+    id 
+    isCurSsn
+    season
+    ssnStat { 
+      numFirst
+      numSecond
+      numThird
+      numFourth
+      numFifth
+      numStarts
+      stakeWon
+      trk
+      ven
+    } 
+    dhStat {
+      numFirst
+      numSecond
+      numThird
+      numFourth
+      numFifth
+      numStarts
+      stakeWon
+      trk
+      ven
+    } 
+  }
+}
+"#####;
+
+/// Trainer championship standings, verbatim from the trainer-ranking page.
+pub const TRAINER_STANDINGS: &str = r#####"
+query rw_GetTrainerRanking($season: String) {
+  trainerStat(season: $season) {
+    code
+    name_ch
+    name_en
+    status 
+    id
+    isCurSsn
+    season
+    visitingIndex
+    ssnStat {
+      numFirst
+      numSecond
+      numThird
+      numFourth
+      numFifth
+      numStarts
+      stakeWon
+      trk
+      ven
+    }
+    dhStat {
+      numFirst
+      numSecond
+      numThird
+      numFourth
+      numFifth
+      numStarts
+      stakeWon
+      trk
+      ven
+    }
+  }
+}
+"#####;

@@ -9,9 +9,16 @@ and the project uses semantic versioning.
 
 - Season fixtures, HKJC football match lists and odds boards, and official
   jockey, trainer and horse profiles with name lookup, in both the CLI and the
-  MCP server (12 tools).
-- Offline unit tests for profile statistics, horse form and the fixture calendar
-  parsers.
+  MCP server (18 tools).
+- Jockey and trainer championship standings, barrier trial results, sectional
+  times, a pace map and a Mark Six ticket checker.
+- Local odds history: `hkjc odds --record` saves snapshots and `hkjc history`
+  shows first/last odds and movement per combination.
+- `hkjc doctor` probes each HKJC endpoint for availability and latency.
+- `hkjc fixtures --next` and `hkjc fixtures --ics` for the next meeting and an
+iCalendar feed.
+- Offline unit tests for profile statistics, horse form, the fixture calendar
+  parser, Mark Six prize divisions and the pace CSV output.
 
 ### Fixed
 

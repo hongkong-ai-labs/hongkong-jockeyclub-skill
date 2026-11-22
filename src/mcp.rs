@@ -236,6 +236,77 @@ fn tools() -> Value {
                 },
                 "required": ["query"]
             }
+        },
+        {
+            "name": "hk_race_standings",
+            "description": "Jockey or trainer championship standings for a season, with wins, placings, starts, win rate and stakes won, optionally limited to one racecourse.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["jockey", "trainer"], "description": "Championship table to return."},
+                    "season": {"type": "string", "description": "Season code such as 25/26. Default: the current season."},
+                    "venue": {"type": "string", "description": "Venue code: ST or HV. Default: both."}
+                },
+                "required": ["kind"]
+            }
+        },
+        {
+            "name": "hk_race_trials",
+            "description": "Barrier trial results for one date: batches, distance, going, and each horse's rider, trainer, draw, running position and time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Trial date, YYYY-MM-DD. Default today."}
+                }
+            }
+        },
+        {
+            "name": "hk_race_sectionals",
+            "description": "Sectional times for one race: race and sectional splits plus every runner's position, margin, sectional time and finish time. The per-runner positions also form the pace map.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Race date, YYYY-MM-DD. Default today."},
+                    "race": {"type": "integer", "minimum": 1, "description": "Race number. Default 1."}
+                }
+            }
+        },
+        {
+            "name": "hk_marksix_check",
+            "description": "Check six Mark Six numbers against a draw, returning matched numbers, whether the extra number matches, the prize division and dividend.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "numbers": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1, "maximum": 49},
+                        "minItems": 6,
+                        "maxItems": 6,
+                        "description": "Six ticket numbers."
+                    },
+                    "draw": {"type": "integer", "minimum": 1, "description": "Draw number. Default: the latest draw."}
+                },
+                "required": ["numbers"]
+            }
+        },
+        {
+            "name": "hk_odds_history",
+            "description": "Odds snapshots previously saved with `hkjc odds --record`: first and last odds per combination, movement and capture times. Empty until odds have been recorded locally.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Meeting date, YYYY-MM-DD. Default today."},
+                    "venue": {"type": "string", "description": "Venue code: ST, HV or CH. Default ST."},
+                    "race": {"type": "integer", "minimum": 1, "description": "Race number. Default 1."},
+                    "pool": {"type": "string", "description": "Only this pool, e.g. WIN."},
+                    "limit": {"type": "integer", "minimum": 0, "description": "Maximum combinations. Default 40; 0 means all."}
+                }
+            }
+        },
+        {
+            "name": "hk_source_health",
+            "description": "Probe each HKJC endpoint used by the skill and report availability, latency and failure detail.",
+            "inputSchema": {"type": "object", "properties": {}}
         }
     ]})
 }
@@ -430,6 +501,80 @@ async fn call(client: &Client, id: Option<Value>, params: Option<&Value>) -> Val
                     arg_str(&args, "query").ok_or_else(|| anyhow::anyhow!("query is required"))?;
                 Ok(serde_json::to_value(client.lookup(query).await?)?)
             }
+            "hk_race_standings" => {
+                let kind =
+                    arg_str(&args, "kind").ok_or_else(|| anyhow::anyhow!("kind is required"))?;
+                let view = client
+                    .standings(kind, arg_str(&args, "season"), arg_venue(&args).as_deref())
+                    .await?;
+                Ok(serde_json::to_value(view)?)
+            }
+            "hk_race_trials" => {
+                let date = arg_date(&args, "date")?.unwrap_or_else(api::hong_kong_today);
+                Ok(serde_json::to_value(client.trials(date).await?)?)
+            }
+            "hk_race_sectionals" => {
+                let date = arg_date(&args, "date")?.unwrap_or_else(api::hong_kong_today);
+                let race = args.get("race").and_then(Value::as_i64).unwrap_or(1);
+                Ok(serde_json::to_value(client.sectionals(date, race).await?)?)
+            }
+            "hk_marksix_check" => {
+                let numbers = args
+                    .get("numbers")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| anyhow::anyhow!("numbers must be an array of six integers"))?;
+                let mut ticket = Vec::with_capacity(numbers.len());
+                for number in numbers {
+                    let value = number
+                        .as_u64()
+                        .filter(|value| (1..=49).contains(value))
+                        .ok_or_else(|| anyhow::anyhow!("every Mark Six number must be 1-49"))?;
+                    ticket.push(value as u8);
+                }
+                if ticket.len() != 6 {
+                    bail!("numbers must contain exactly six Mark Six numbers");
+                }
+                let draw = args.get("draw").and_then(Value::as_i64);
+                let draws = client
+                    .mark_six(Some(draw.map_or(1, |_| 30)), None, None)
+                    .await?;
+                let selected =
+                    match draw {
+                        Some(selected) => draws
+                            .iter()
+                            .find(|item| item.no == selected)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("draw {selected} is not in the recent results")
+                            })?,
+                        None => draws
+                            .first()
+                            .ok_or_else(|| anyhow::anyhow!("no Mark Six draw is published"))?,
+                    };
+                Ok(serde_json::to_value(api::check_mark_six(
+                    &ticket,
+                    &selected.view(),
+                ))?)
+            }
+            "hk_odds_history" => {
+                let date = arg_date(&args, "date")?.unwrap_or_else(api::hong_kong_today);
+                let venue = arg_venue(&args).unwrap_or_else(|| "ST".to_string());
+                let race = args.get("race").and_then(Value::as_i64).unwrap_or(1);
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize)
+                    .unwrap_or(40);
+                let view = crate::history::load(
+                    &date.to_string(),
+                    &venue,
+                    race,
+                    arg_str(&args, "pool"),
+                    limit,
+                    None,
+                )?;
+                Ok(serde_json::to_value(view)?)
+            }
+            "hk_source_health" => Ok(serde_json::to_value(client.health().await)?),
             other => bail!("unknown tool: {other}"),
         }
     }

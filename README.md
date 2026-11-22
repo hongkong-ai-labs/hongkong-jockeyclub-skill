@@ -5,8 +5,9 @@ server.
 
 Reads the official, keyless data that powers bet.hkjc.com: race meetings, race
 cards, runners, live tote odds, football matches and odds, Mark Six draws and
-prize divisions. Historical race results, dividends, season fixtures and
-jockey, trainer and horse profiles are read from racing.hkjc.com.
+prize divisions. Historical race results, dividends, season fixtures,
+championship standings, barrier trials, sectional times and jockey, trainer and
+horse profiles are read from racing.hkjc.com.
 
 ## Install
 
@@ -53,8 +54,18 @@ hkjc meetings --venue ST
 hkjc card --race 7
 hkjc odds --race 1 --types WIN,PLA,QIN
 hkjc results --date 2026-11-18 --venue HV --race 4
+hkjc standings jockey --season 26/27
+hkjc trials --date 2026-11-18
+hkjc sectionals --date 2026-11-18 --race 4
+hkjc pace --date 2026-11-18 --race 4
+hkjc odds --race 1 --record          # save an odds snapshot for history
+hkjc history --date 2026-11-18 --venue HV --race 4
+hkjc marksix-check 1,2,3,4,5,6
+hkjc doctor
 hkjc fixtures
 hkjc fixtures --all
+hkjc fixtures --next
+hkjc fixtures --ics > races.ics
 hkjc lookup Purton
 hkjc profile jockey PZ
 hkjc profile horse HK_2024_K392
@@ -95,9 +106,10 @@ not inherit the shell `PATH`.
 
 
 Tools: `hk_race_meetings`, `hk_race_card`, `hk_race_odds`, `hk_race_results`,
-`hk_race_fixtures`, `hk_race_profile`, `hk_race_lookup`, `hk_football_matches`,
+`hk_race_fixtures`, `hk_race_standings`, `hk_race_trials`, `hk_race_sectionals`,
+`hk_odds_history`, `hk_race_profile`, `hk_race_lookup`, `hk_football_matches`,
 `hk_football_match`, `hk_marksix_results`, `hk_marksix_latest`,
-`hk_marksix_stats`.
+`hk_marksix_stats`, `hk_marksix_check`, `hk_source_health`.
 
 ## Data
 

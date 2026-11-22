@@ -1,6 +1,6 @@
 ---
 name: hongkong-jockeyclub-skill
-description: Hong Kong Jockey Club data — horse racing fixtures, race cards, runners, jockeys, trainers, horse profiles, barriers, live tote odds, historical results, dividends and incidents, HKJC football matches and odds, plus Mark Six draw results, jackpots, prize divisions and number frequency. Use for questions about Hong Kong racing, Sha Tin, Happy Valley, Mark Six, 六合彩, race results, football or lottery numbers.
+description: Hong Kong Jockey Club data — horse racing fixtures, race cards, runners, jockeys, trainers, championship standings, barrier trials, sectional times and pace maps, horse profiles, live tote odds with local odds history, historical results, dividends and incidents, HKJC football matches and odds, plus Mark Six draw results, ticket checks, jackpots, prize divisions and number frequency. Use for questions about Hong Kong racing, Sha Tin, Happy Valley, Mark Six, 六合彩, race results, football or lottery numbers.
 license: MIT
 ---
 
@@ -78,8 +78,19 @@ $BIN card --race 7                    # runners for race 7
 $BIN card --race 1 --json
 $BIN odds --race 1 --types WIN,PLA,QIN
 $BIN results --date 2026-11-18 --venue HV --race 4
+$BIN standings jockey --season 26/27 # championship table
+$BIN standings trainer --venue ST
+$BIN trials --date 2026-11-18         # barrier trial results
+$BIN sectionals --date 2026-11-18 --race 4
+$BIN pace --date 2026-11-18 --race 4  # running positions per section
+$BIN odds --race 1 --record           # save an odds snapshot
+$BIN history --date 2026-11-18 --venue HV --race 4
+$BIN marksix-check 1,2,3,4,5,6
+$BIN doctor                           # HKJC endpoint health
 $BIN fixtures                         # race meetings in the next 90 days
 $BIN fixtures --all                   # the whole season
+$BIN fixtures --next                  # only the next meeting
+$BIN fixtures --ics > races.ics       # iCalendar feed
 $BIN lookup Purton                    # find a jockey, trainer or horse
 $BIN profile jockey PZ                # official profile
 $BIN profile trainer TKH --json
@@ -148,6 +159,10 @@ Tools:
 | `hk_race_odds` | `{ race?, types?, date?, venue? }` |
 | `hk_race_results` | `{ date?, venue?, race? }` |
 | `hk_race_fixtures` | `{ from?, to?, venue?, all? }` |
+| `hk_race_standings` | `{ kind, season?, venue? }` — kind is `jockey` or `trainer` |
+| `hk_race_trials` | `{ date? }` |
+| `hk_race_sectionals` | `{ date?, race? }` — includes the pace-map positions |
+| `hk_odds_history` | `{ date?, venue?, race?, pool?, limit? }` — snapshots saved with `odds --record` |
 | `hk_race_profile` | `{ kind, id }` — kind is `jockey`, `trainer` or `horse` |
 | `hk_race_lookup` | `{ query }` — name to profile id |
 | `hk_football_matches` | `{ from?, to?, tournament?, limit? }` |
@@ -155,6 +170,8 @@ Tools:
 | `hk_marksix_results` | `{ draws?, from?, to? }` |
 | `hk_marksix_latest` | `{}` |
 | `hk_marksix_stats` | `{ draws? }` |
+| `hk_marksix_check` | `{ numbers, draw? }` — six numbers against a draw |
+| `hk_source_health` | `{}` — endpoint availability and latency |
 
 ## Answering patterns
 
