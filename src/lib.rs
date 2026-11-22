@@ -8,4 +8,5 @@ pub mod mcp;
 pub mod model;
 pub mod queries;
 pub mod render;
+pub mod sources;
 pub mod watch;
