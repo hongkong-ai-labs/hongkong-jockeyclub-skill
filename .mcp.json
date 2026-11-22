@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "hongkong-jockeyclub": {
-      "command": "hkjc-mcp",
-      "args": []
+      "command": "hkjc",
+      "args": ["mcp"]
     }
   }
 }

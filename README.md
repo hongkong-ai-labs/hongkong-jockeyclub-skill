@@ -75,7 +75,7 @@ Add `--json` for structured output.
 ```json
 {
   "mcpServers": {
-    "hongkong-jockeyclub": { "command": "hkjc-mcp", "args": [] }
+    "hongkong-jockeyclub": { "command": "hkjc", "args": ["mcp"] }
   }
 }
 ```
@@ -83,13 +83,13 @@ Add `--json` for structured output.
 Register it with any MCP client:
 
 ```bash
-npx add-mcp "$(command -v hkjc-mcp)" --name hongkong-jockeyclub -a claude-code -a codex -a cursor -y
-claude mcp add hongkong-jockeyclub -- hkjc-mcp
-codex mcp add hongkong-jockeyclub -- hkjc-mcp
+npx add-mcp "$(command -v hkjc) mcp" --name hongkong-jockeyclub -a claude-code -a codex -a cursor -y
+claude mcp add hongkong-jockeyclub -- hkjc mcp
+codex mcp add hongkong-jockeyclub -- hkjc mcp
 ```
 
 `add-mcp` detects the client configuration files in the current project; add
-`-g` for a global install. `$(command -v hkjc-mcp)` keeps the entry correct
+`-g` for a global install. `$(command -v hkjc)` keeps the entry correct
 when the binary is on `PATH`; substitute an absolute path if your client does
 not inherit the shell `PATH`.
 
@@ -122,7 +122,7 @@ HKJC for confirmation.
 | --- | --- | --- |
 | CLI | `hkjc <command>` | Interactive use and shell scripts |
 | JSON | `<command>` with `--json` | `jq`, automation, other programs |
-| MCP stdio | `hkjc-mcp` (starts directly) or `hkjc mcp` | Desktop and CLI MCP clients |
+| MCP stdio | `hkjc mcp` | Desktop and CLI MCP clients |
 | Container | `docker run --rm -i hkjc mcp` | No local Rust toolchain |
 
 ### MCP and authentication
@@ -139,7 +139,7 @@ Typical client entry:
 {
   "mcpServers": {
     "hongkong-jockeyclub-skill": {
-      "command": "hkjc-mcp",
+      "command": "hkjc",
       "args": ["mcp"]
     }
   }
